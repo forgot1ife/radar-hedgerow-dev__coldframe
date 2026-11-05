@@ -1,6 +1,6 @@
 # coldframe
 
-A low-interaction honeypot for supermarket refrigeration controllers.
+A honeypot for supermarket refrigeration controllers.
 
 In 2026, attackers broke into internet-facing refrigeration supervisors across Europe using default passwords and old, unpatched firmware, then forced defrost cycles. coldframe pretends to be one of those controllers. It records who connects, what passwords they try and which public exploits they use, and it never gives them anything real.
 
@@ -10,8 +10,16 @@ It is one Python file with no dependencies outside the standard library.
 
 | Persona | Pretends to be | What it serves |
 |---|---|---|
-| `danfoss` | Danfoss AK-SM 800A system manager | StoreView Web login page, the XML API at `/html/xml.cgi` and `/xml.cgi`, HTTP and HTTPS |
+| `danfoss` | Danfoss AK-SM 800A system manager | StoreView login, a fake store dashboard, the XML API at `/html/xml.cgi` and `/xml.cgi`, HTTP and HTTPS |
 | `dixell` | Copeland/Dixell XWEB 500 supervisor | Login page and the CGI paths targeted by public exploits |
+
+### Looking like a real unit
+
+The Danfoss persona copies what internet scanners record for real AK-SM 800A units: the `nginx` server header and header order, the `Danfoss StoreView` page title, TLS 1.2 only, and a 1-year certificate for `CN=DanfossSM800A` issued by a `SelfSigned-DanfossSM800A` authority. Each build generates its own keys.
+
+Weak logins (for example `Supervisor` / `12345`) and a correct CVE-2025-41450 "code of the day" **succeed**. The attacker gets a session token and a dashboard of fake refrigerated cases with defrost buttons. Every action they take is logged as a `control` event; nothing is real.
+
+Real units serve a Danfoss favicon, and scanners match devices by its hash. That icon is Danfoss artwork, so it is not in this repository. For a private deployment you can point `FAVICON_FILE` at a copy you have the right to use.
 
 Both personas can also run an optional **Modbus TCP** service with fake case temperatures, setpoints and a defrost register. Real AK-SM 800A units only use Modbus to talk to their own case controllers, so Modbus is off by default. Turn it on to catch generic industrial scanners.
 
@@ -22,7 +30,8 @@ Requests that match a public exploit get an `exploit` field in the log:
 - **CVE-2023-25914**: AK-SM 800A path traversal via `get_file`
 - **CVE-2023-25915**: AK-SM 800A command injection via `load_cert`
 - **CVE-2025-41452**: AK-SM 800A nginx header overwrite via `load_nginx_headers`
-- **SM800 code-of-the-day bypass**: `eds_only` / `quantum_only` attributes
+- **CVE-2025-41450**: AK-SM 800A "code of the day" login bypass (`getauth` with `eds_only` or `quantum_only`), noting whether the attacker computed the correct code
+- **SM800 code-of-the-day bypass**: `eds_only` / `quantum_only` on other commands
 - **CVE-2021-45420**: XWEB 500 upload and command paths under `/cgi-bin/`
 
 ## Quick start
@@ -78,6 +87,7 @@ On the host, only expose the ports the persona would really have, and block outb
 | `HTTPS_PORT` | `0` (off) | HTTPS listener, needs `CERT_FILE` and `KEY_FILE` |
 | `MODBUS_PORT` | `0` (off) | Modbus TCP listener |
 | `LOG_PATH` | `events.jsonl` | Where events are appended |
+| `FAVICON_FILE` | none | Optional favicon to serve (private deployments only) |
 
 ## Reading the log
 
@@ -92,7 +102,8 @@ Each line is one event:
 | `event` | When |
 |---|---|
 | `request` | Any HTTP(S) request, with method, path, Host, User-Agent, Authorization and body |
-| `login_attempt` | Credentials submitted through the login page or the XML API |
+| `login_attempt` | Credentials submitted through the login page or the XML API, with `granted` |
+| `control` | An action from a logged-in session, such as starting a defrost |
 | `xml_cmd` | A Danfoss XML API command, with its attributes and any `exploit` match |
 | `tls_error` | A failed TLS handshake (often a scanner speaking plain HTTP to 443) |
 | `connect`, `read`, `write`, `device_id`, `unsupported`, `malformed` | Modbus activity; writes to the defrost registers carry `"defrost": true` |
@@ -114,9 +125,9 @@ python3 -I summary.py --hours 24 --ignore <your-own-ip> < events.jsonl
 
 ## Limitations
 
-- **Low interaction.** Logins always fail, so you see the first move, not what an attacker does after getting in.
+- **Shallow interaction.** Logged-in attackers see a small dashboard and a handful of XML commands, not the full StoreView app.
 - **Public code can be fingerprinted.** Anyone can read this repository and spot its exact responses. Change the persona strings, page layout and certificate subject for your deployment.
-- **Unconfirmed details.** Exact page titles, static paths and certificate fields of real units are not in public documentation. Where they were missing, coldframe uses plausible values.
+- **Unconfirmed details.** Static paths, the full web app and some XML response shapes of real units are not public. Where they were missing, coldframe uses plausible values.
 - **Cloud IPs look suspicious.** Some scanners flag industrial devices on cloud hosting as likely honeypots.
 
 ## Sources
@@ -127,6 +138,12 @@ python3 -I summary.py --hours 24 --ignore <your-own-ip> < events.jsonl
 - Synacktiv, SM800 auth bypass: https://www.synacktiv.com/sites/default/files/2023-10/synacktiv-danfoss-sm800-sc255-sc355-auth-bypass.pdf
 - Claroty Team82, Danfoss controller research (CVE-2025-41450 to 41452): https://blog.claroty.com/team82/research/freeze-the-controller-defrost-the-food-uncovering-vulnerabilities-in-danfoss-refrigeration-controllers
 - Exploit-DB 50639, XWEB 500 (CVE-2021-45420): https://www.exploit-db.com/exploits/50639
+- Ironhackers, CVE-2025-41450 code-of-the-day analysis: https://ironhackers.es/en/danfoss-ak-sm-800a-cve-2025-41450/
+- Shodan records of exposed units (header set, title, certificate fields), November 2026
+
+## Related work
+
+[eppser/danfoss-ak-sm-decoy](https://github.com/eppser/danfoss-ak-sm-decoy) is another AK-SM decoy, with SNMP and Service Tool listeners and a richer simulated store. coldframe focuses on matching real units' web fingerprints, detecting specific exploits, and Dixell XWEB support.
 
 ## License
 

@@ -37,13 +37,14 @@ ips = Counter(e["src_ip"] for e in events)
 logins = Counter((e["username"], e["password"]) for e in events if e["event"] == "login_attempt")
 paths = Counter(e["path"] for e in events if e["event"] == "request")
 exploits = Counter(e["exploit"] for e in events if e.get("exploit"))
-writes = [e for e in events if e["event"] == "write"]
-defrost = [e for e in writes if e.get("defrost")]
+writes = [e for e in events if e["event"] in ("write", "control")]
+defrost = [e for e in events if e.get("defrost")]
+granted = sum(1 for e in events if e["event"] == "login_attempt" and e.get("granted"))
 modbus_ips = {e["src_ip"] for e in events if e["proto"] == "modbus"}
 
 print(f"Fridge decoy, last {args.hours}h: {len(events)} events from {len(ips)} IPs")
-print(f"  logins tried: {sum(logins.values())}   exploit attempts: {sum(exploits.values())}   "
-      f"modbus sources: {len(modbus_ips)}   register writes: {len(writes)}   "
+print(f"  logins tried: {sum(logins.values())} (accepted: {granted})   exploit attempts: {sum(exploits.values())}   "
+      f"modbus sources: {len(modbus_ips)}   control writes: {len(writes)}   "
       f"DEFROST attempts: {len(defrost)}")
 for title, counter in (("Exploits", exploits), ("Top IPs", ips),
                        ("Top credentials", logins), ("Top paths", paths)):
@@ -53,5 +54,5 @@ for title, counter in (("Exploits", exploits), ("Top IPs", ips),
             label = f"{key[0]} / {key[1]}" if isinstance(key, tuple) else key
             print(f"  {n:5}  {safe(label)[:100]}")
 for e in defrost:
-    print(f"\nDEFROST {safe(e['ts'])} from {safe(e['src_ip'])}: "
-          f"fc={e['fc']} start={e['start']} values={e['values']}")
+    where = f"node={e.get('node')}" if e["proto"] != "modbus" else f"start={e['start']} values={e['values']}"
+    print(f"\nDEFROST {safe(e['ts'])} from {safe(e['src_ip'])} via {e['proto']}: {safe(where)}")

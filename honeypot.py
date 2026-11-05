@@ -19,6 +19,7 @@ import json
 import os
 import random
 import re
+import secrets
 import signal
 import socket
 import socketserver
@@ -27,7 +28,8 @@ import struct
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import formatdate
 from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
@@ -39,6 +41,9 @@ MODBUS_PORT = int(os.environ.get("MODBUS_PORT", "0"))    # 0 = off
 CERT_FILE = os.environ.get("CERT_FILE", "cert.pem")
 KEY_FILE = os.environ.get("KEY_FILE", "key.pem")
 LOG_PATH = os.environ.get("LOG_PATH", "events.jsonl")
+# Optional: the real device's favicon, for private deployments only. It is the
+# vendor's artwork, so it is not shipped in this repository.
+FAVICON_FILE = os.environ.get("FAVICON_FILE", "")
 
 MAX_BODY = 8192        # bytes of request body we will read
 MAX_FIELD = 512        # chars of any logged string
@@ -54,10 +59,10 @@ CONN_DEADLINE = 30     # seconds any connection may live, however it trickles
 # See README.md for sources.
 PERSONAS = {
     "danfoss": {
-        "server": "Danfoss SM800A",
+        "server": "nginx",
         "vendor": "Danfoss",
         "product": "AK-SM 880A",
-        "firmware": "4.3.1",
+        "firmware": "SVB501.000.139",  # pre-R4.3.1, still has the code-of-the-day path
         "not_found": "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n"
                      "<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n"
                      "</body>\r\n</html>\r\n",
@@ -73,6 +78,11 @@ PERSONAS = {
     },
 }
 P = PERSONAS[PERSONA]
+FIRMWARE_MTIME = 0x6A198BB7  # Fri, 29 May 2026 12:51:03 GMT, as on a real unit
+FAVICON = b""
+if FAVICON_FILE:
+    with open(FAVICON_FILE, "rb") as f:
+        FAVICON = f.read(65536)
 
 _log_lock = threading.Lock()
 _slots_lock = threading.Lock()
@@ -205,7 +215,7 @@ def log(proto, src, event, **details):
 # Layout follows the local-screen login in the AK-SM 800A user guide.
 
 DANFOSS_LOGIN = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>StoreView Web</title>
+<html><head><meta charset="utf-8"><title>Danfoss StoreView</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#333}
 .bar{background:#e2000f;color:#fff;font-size:12px;text-align:right;padding:4px 10px;height:14px}
@@ -217,7 +227,10 @@ h1{color:#e2000f;font-size:15px;margin:0 0 22px}
 .show{position:absolute;margin-left:300px;font-size:12px;color:#888}
 button{display:block;width:194px;margin:12px 0 0 80px;padding:8px;font-size:13px;border:1px solid #bbb;background:#fff;cursor:pointer}
 .forgot{background:#eee;color:#999}.signin{background:#323a45;color:#fff;font-weight:bold;margin-top:28px}
-.err{color:#e2000f;font-size:12px;min-height:16px;margin-top:14px}</style></head>
+.err{color:#e2000f;font-size:12px;min-height:16px;margin-top:14px}
+.dash{max-width:760px;margin:24px auto;font-size:13px}.dash h1{text-align:left}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px;border-bottom:1px solid #ddd}
+th{background:#323a45;color:#fff;font-weight:normal}td button{width:auto;margin:0;padding:3px 8px}</style></head>
 <body><div class="bar" id="clock"></div><div class="box">
 <div class="brand">Danfoss</div><h1>Danfoss System Manager - SM800A</h1>
 <form id="f"><div class="row"><label for="u">User name</label><input type="text" id="u" autocomplete="off"></div>
@@ -232,11 +245,37 @@ document.getElementById('clock').textContent=p(d.getMonth()+1)+'/'+p(d.getDate()
 tick();setInterval(tick,1000);
 document.getElementById('s').onchange=function(){document.getElementById('p').type=this.checked?'text':'password'};
 function x(s){return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
+var tok='';
+function api(cmd){return fetch('/html/xml.cgi',{method:'POST',headers:{'Content-Type':'text/xml','AKSM-Auth':tok},body:cmd})
+.then(function(r){return r.text()}).then(function(t){return new DOMParser().parseFromString(t,'text/xml')})}
+function cell(tr,text){var td=document.createElement('td');td.textContent=text;tr.appendChild(td);return td}
+function load(){api('<cmd action="read_devices"/>').then(function(d){var tb=document.getElementById('cases');tb.innerHTML='';
+[].forEach.call(d.getElementsByTagName('device'),function(v){var tr=document.createElement('tr'),n=v.getAttribute('node');
+cell(tr,v.getAttribute('name'));cell(tr,v.getAttribute('temp')+' °C');cell(tr,v.getAttribute('setpoint')+' °C');
+cell(tr,v.getAttribute('defrost')=='1'?'Defrost':'Cooling');var b=document.createElement('button');b.textContent='Start defrost';
+b.onclick=function(){api('<cmd action="start_defrost" node="'+n+'"/>').then(load)};cell(tr,'').appendChild(b);tb.appendChild(tr)})})}
+function dash(){api('<cmd action="read_units"/>').then(function(d){var n=d.getElementsByTagName('store_name')[0];
+document.body.innerHTML='<div class="bar" id="clock"></div><div class="dash"><h1 id="st"></h1>'+
+'<table><thead><tr><th>Case</th><th>Air temp</th><th>Setpoint</th><th>State</th><th></th></tr></thead><tbody id="cases"></tbody></table></div>';
+document.getElementById('st').textContent=n?n.textContent:'';tick();load();setInterval(load,10000)})}
 document.getElementById('f').onsubmit=function(ev){ev.preventDefault();
-var b='<cmd action="getauth" user="'+x(document.getElementById('u').value)+'" password="'+x(document.getElementById('p').value)+'"/>';
-fetch('/html/xml.cgi',{method:'POST',headers:{'Content-Type':'text/xml'},body:b}).then(function(){
-document.getElementById('e').textContent='Invalid user name or password'})};
+var b='<cmd action="getauth" user="'+x(document.getElementById('u').value)+'" password="'+x(document.getElementById('p').value)+'" lang="English"/>';
+api(b).then(function(d){var t=d.getElementsByTagName('session_token')[0];
+if(t){tok=t.textContent;dash()}else{document.getElementById('e').textContent='Invalid user name or password'}})};
 </script></body></html>"""
+
+NOT_ALLOWED = ("<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n"
+               "<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n")
+
+DANFOSS_STATIC_HEADERS = [
+    ("Access-Control-Allow-Origin", "*"),
+    ("Strict-Transport-Security", "max-age=31536000; includeSubDomains"),
+    ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
+    ("Access-Control-Allow-Headers",
+     "aksm-auth,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type"),
+    ("Cache-Control", "no-store, no-cache"),
+    ("Accept-Ranges", "bytes"),
+]
 
 CMD_RE = re.compile(r"<cmd\b([^>]{0,2000})>", re.S)
 ATTR_RE = re.compile(r'([A-Za-z_][\w.-]*)\s*=\s*"([^"]*)"')
@@ -255,26 +294,100 @@ def danfoss_exploit_tag(action, attrs):
     return ""
 
 
+# Logins that "work", so we can watch what attackers do next. Supervisor/12345
+# is reported as an AK-SM factory default; the others are common guesses.
+WEAK_LOGINS = {("supervisor", "12345"), ("superviseur", "12345"), ("admin", "admin"), ("admin", "1234")}
+STORE_NAME = "Fresh Market 0412"
+SESSION_TTL = 3600
+_sessions = {}  # token -> expiry (monotonic)
+_sessions_lock = threading.Lock()
+
+
+def code_of_the_day(day):
+    """The CVE-2025-41450 bypass code, as published by Ironhackers."""
+    s = "%02d%02d%02d%02d" % (day.month, day.day, day.year % 100, day.month)
+    return "%05d" % ((int(s, 16) // int("%02d" % day.day, 16)) % 100000)
+
+
+def valid_codes():
+    today = datetime.now(timezone.utc).date()  # allow for the unit's timezone
+    return {code_of_the_day(today + timedelta(days=d)) for d in (-1, 0, 1)}
+
+
+def new_session():
+    token = secrets.token_hex(32)
+    now = time.monotonic()
+    with _sessions_lock:
+        for t, expiry in list(_sessions.items()):
+            if expiry < now:
+                del _sessions[t]
+        if len(_sessions) > 1000:
+            _sessions.clear()
+        _sessions[token] = now + SESSION_TTL
+    return token
+
+
+def has_session(token):
+    with _sessions_lock:
+        return _sessions.get(token, 0) > time.monotonic()
+
+
 def danfoss_xml(src, proto, body, headers):
     match = CMD_RE.search(body)
     pairs = ATTR_RE.findall(match.group(1))[:16] if match else []
     attrs = {k[:32]: v[:256] for k, v in pairs}
     action = attrs.get("action", "")
-    log(proto, src, "xml_cmd", action=action, attrs=attrs,
-        auth_header=headers.get("AKSM-Auth", ""), exploit=danfoss_exploit_tag(action, attrs))
+    token = headers.get("AKSM-Auth", "")
+    exploit = danfoss_exploit_tag(action, attrs)
+    authed = has_session(token)
+
+    granted = False
+    user, password = attrs.get("user", ""), attrs.get("password", attrs.get("pass", ""))
     if action == "getauth" or "user" in attrs or "pass" in attrs:
-        log(proto, src, "login_attempt", username=attrs.get("user", ""),
-            password=attrs.get("password", attrs.get("pass", "")))
+        if "eds_only" in attrs or "quantum_only" in attrs:
+            granted = password in valid_codes()
+            exploit = "CVE-2025-41450 code-of-the-day bypass" + (", correct code" if granted else "")
+        else:
+            granted = (user.lower(), password) in WEAK_LOGINS
+    authed = authed or granted  # user=/pass= on any command is the pre-4.0 auth style
+    log(proto, src, "xml_cmd", action=action, attrs=attrs, auth_header=token,
+        session=authed, exploit=exploit)
+    if action == "getauth" or "user" in attrs or "pass" in attrs:
+        log(proto, src, "login_attempt", username=user, password=password, granted=granted)
         time.sleep(random.uniform(0.6, 1.4))
 
     head = '<?xml version="1.0" encoding="utf-8"?>\n'
+    act = escape(action)
     if action == "read_date_time":  # answered without login on real units
         now = datetime.now()
         return head + (f'<resp action="read_date_time" error="0"><year>{now.year}</year>'
                        f'<month>{now.month}</month><day>{now.day}</day><hour>{now.hour}</hour>'
                        f'<minute>{now.minute}</minute><second>{now.second}</second></resp>')
-    # 15 is the documented "failed in authorization" code.
-    return head + f'<resp action="{escape(action)}" error="15"/>'
+    if action == "getauth":
+        if not granted:  # denial shape per the Ironhackers write-up
+            return head + '<resp action="getauth" error="0"><authtype>-1</authtype><accesslevel>255</accesslevel></resp>'
+        return head + ('<resp action="getauth" error="0"><authorization>01-01</authorization>'
+                       '<authtype>16777215</authtype><access>01-01</access><accesslevel>1</accesslevel>'
+                       f'<strongpassword>1</strongpassword><session_token>{new_session()}</session_token></resp>')
+    if not authed:
+        # 15 is the documented "failed in authorization" code.
+        return head + f'<resp action="{act}" error="15"/>'
+
+    if action == "read_units":
+        return head + (f'<resp action="read_units" error="0"><store_name>{STORE_NAME}</store_name>'
+                       f'<software>{P["firmware"]}</software><macaddr>00:0a:5c:3e:91:4d</macaddr>'
+                       '<port>80</port></resp>')
+    if action == "read_devices":
+        rows = "".join(f'<device node="{n + 1}" name="{CASE_NAMES[n]}" temp="{t / 10:.1f}" '
+                       f'setpoint="{sp / 10:.1f}" defrost="{d}"/>' for n, (t, sp, d) in enumerate(case_status()))
+        return head + f'<resp action="read_devices" error="0">{rows}</resp>'
+    # Anything else from a logged-in session is a control attempt: accept, log, do nothing real.
+    node = attrs.get("node", "")
+    defrost = "defrost" in action.lower()
+    log(proto, src, "control", action=action, node=node, defrost=defrost)
+    if defrost and node.isdigit() and 1 <= int(node) <= len(CASE_NAMES):
+        write_registers(200 + int(node) - 1, [1])
+    return head + f'<resp action="{act}" error="0"/>'
 
 
 # --- Dixell XWEB 500 ----------------------------------------------------------
@@ -327,12 +440,21 @@ class DecoyHTTP(BaseHTTPRequestHandler):
     def proto(self):
         return "https" if isinstance(self.request, ssl.SSLSocket) else "http"
 
-    def reply(self, status, body, content_type="text/html; charset=utf-8"):
-        data = body.encode()
+    def reply(self, status, body, content_type="text/html; charset=utf-8", static=False):
+        data = body.encode() if isinstance(body, str) else body
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
-        self.send_header("Connection", "close")
+        if static and PERSONA == "danfoss":
+            # Header set and order seen on real AK-SM 800A units (Shodan, Nov 2026).
+            self.send_header("Last-Modified", formatdate(FIRMWARE_MTIME, usegmt=True))
+            self.send_header("Connection", "keep-alive")
+            self.send_header("ETag", f'"{FIRMWARE_MTIME:x}-{len(data):x}"')
+            for name, value in DANFOSS_STATIC_HEADERS:
+                self.send_header(name, value)
+        else:
+            self.send_header("Connection", "close")
+            self.close_connection = True
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
@@ -354,7 +476,7 @@ class DecoyHTTP(BaseHTTPRequestHandler):
         return self.rfile.read(min(max(length, 0), MAX_BODY)).decode("latin-1")
 
     def handle_any(self):
-        body = self.read_body() if self.command == "POST" else ""
+        body = self.read_body()  # any method: leftover bytes would desync keep-alive
         path = urlsplit(self.path).path
         exploit = DIXELL_EXPLOIT_PATHS.get(path, "") if PERSONA == "dixell" else ""
         log(self.proto, self.client_address, "request",
@@ -364,11 +486,17 @@ class DecoyHTTP(BaseHTTPRequestHandler):
             body=body, exploit=exploit)
 
         if PERSONA == "danfoss":
-            if path in ("/html/xml.cgi", "/xml.cgi") and self.command == "POST":
-                return self.reply(200, danfoss_xml(self.client_address, self.proto, body, self.headers),
-                                  "text/xml; charset=utf-8")
+            if path in ("/html/xml.cgi", "/xml.cgi"):
+                if self.command == "POST":
+                    return self.reply(200, danfoss_xml(self.client_address, self.proto, body, self.headers),
+                                      "text/xml; charset=utf-8")
+                if self.command == "OPTIONS":  # CORS preflight from the web app
+                    return self.reply(204, b"", "text/plain")
+                return self.reply(405, NOT_ALLOWED, "text/html")
             if path in ("/", "/index.html"):
-                return self.reply(200, DANFOSS_LOGIN)
+                return self.reply(200, DANFOSS_LOGIN, "text/html", static=True)
+            if path == "/favicon.ico" and FAVICON:
+                return self.reply(200, FAVICON, "image/x-icon", static=True)
             return self.reply(404, P["not_found"])
 
         if path == "/login" and self.command == "POST":
@@ -428,6 +556,19 @@ for case in range(8):
     REGISTERS[200 + case] = 0
 
 
+CASE_NAMES = ["Frozen 1", "Frozen 2", "Ice cream", "Frozen 4", "Dairy", "Meat", "Deli", "Produce"]
+_defrost_since = {}  # case -> time defrost started
+DEFROST_SECONDS = 20 * 60
+
+
+def case_status():
+    """(air temp, setpoint, defrost) per case, in tenths of a degree C."""
+    temps = read_registers(0, 8)
+    with _state_lock:
+        return [(struct.unpack(">h", struct.pack(">H", temps[n]))[0], REGISTERS[100 + n],
+                 1 if REGISTERS[200 + n] else 0) for n in range(8)]
+
+
 def mapped(start, count):
     return all(addr in REGISTERS for addr in range(start, start + count))
 
@@ -439,6 +580,13 @@ def read_registers(start, count):
             value = REGISTERS[addr]
             if addr < 8:
                 value += random.randint(-2, 2)  # sensor jitter
+                if addr in _defrost_since:  # warms about 1.5 C a minute, up to 25 C
+                    elapsed = time.time() - _defrost_since[addr]
+                    if elapsed > DEFROST_SECONDS:  # cycle over, back to cooling
+                        del _defrost_since[addr]
+                        REGISTERS[200 + addr] = 0
+                    else:
+                        value += min(250, int(elapsed / 4))
             values.append(value & 0xFFFF)
         return values
 
@@ -446,7 +594,13 @@ def read_registers(start, count):
 def write_registers(start, values):
     with _state_lock:
         for offset, value in enumerate(values):
-            REGISTERS[start + offset] = struct.unpack(">h", struct.pack(">H", value))[0]
+            addr = start + offset
+            REGISTERS[addr] = struct.unpack(">h", struct.pack(">H", value))[0]
+            if 200 <= addr < 208:
+                if value:
+                    _defrost_since.setdefault(addr - 200, time.time())
+                else:
+                    _defrost_since.pop(addr - 200, None)
 
 
 def modbus_exception(fc, code):
@@ -548,6 +702,7 @@ def main():
     servers = [DecoyHTTPServer(("0.0.0.0", HTTP_PORT), DecoyHTTP)]
     if HTTPS_PORT:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = context.maximum_version = ssl.TLSVersion.TLSv1_2  # as real units
         context.load_cert_chain(CERT_FILE, KEY_FILE)
         servers.append(TLSHTTPServer(("0.0.0.0", HTTPS_PORT), DecoyHTTP, context))
     if MODBUS_PORT:

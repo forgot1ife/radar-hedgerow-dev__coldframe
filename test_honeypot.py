@@ -62,8 +62,14 @@ def test_danfoss(workdir):
     try:
         status, headers, page = http("/")
         assert status == 200 and "Danfoss System Manager - SM800A" in page
-        assert headers["Server"] == "Danfoss SM800A"
+        assert headers["ETag"].startswith('"6a198bb7-') and headers["Connection"] == "keep-alive"
+        assert headers["Server"] == "nginx" and "<title>Danfoss StoreView</title>" in page
+        assert list(headers.keys()) == [
+            "Server", "Date", "Content-Type", "Content-Length", "Last-Modified", "Connection", "ETag",
+            "Access-Control-Allow-Origin", "Strict-Transport-Security", "Access-Control-Allow-Methods",
+            "Access-Control-Allow-Headers", "Cache-Control", "Accept-Ranges"]
         assert http("/wp-login.php")[0] == 404
+        assert http("/html/xml.cgi")[0] == 405
         with socket.create_connection(("127.0.0.1", HTTP_PORT)) as s:  # odd method, junk line
             s.sendall(b"OPTIONS / HTTP/1.1\r\nHost: x\r\n\r\n")
             assert b"Error code explanation" not in s.recv(4096)
@@ -82,10 +88,29 @@ def test_danfoss(workdir):
             except ConnectionResetError:
                 pass
 
-        _, _, xml = http("/html/xml.cgi", b'<cmd action="getauth" user="Superviseur" password="12345"/>')
+        _, _, xml = http("/html/xml.cgi", b'<cmd action="getauth" user="nobody" password="wrong"/>')
+        assert "<session_token>" not in xml and "<accesslevel>255</accesslevel>" in xml
+        assert 'error="15"' in http("/html/xml.cgi", b'<cmd action="read_units"/>')[2]
+        _, _, xml = http("/html/xml.cgi", b'<cmd action="getauth" user="Supervisor" password="12345"/>')
+        token = xml.split("<session_token>")[1].split("<")[0]
+        authed = lambda body: urllib.request.urlopen(urllib.request.Request(
+            f"http://127.0.0.1:{HTTP_PORT}/html/xml.cgi", data=body, headers={"AKSM-Auth": token})).read().decode()
+        assert "<store_name>" in authed(b'<cmd action="read_units"/>')
+        assert "<store_name>" in http("/xml.cgi", b'<cmd action="read_units" user="admin" pass="admin"/>')[2]
+        assert authed(b'<cmd action="read_devices"/>').count("<device ") == 8
+        authed(b'<cmd action="start_defrost" node="2"/>')
+        assert 'name="Frozen 2" ' in authed(b'<cmd action="read_devices"/>')
+        assert 'node="2" name="Frozen 2"' in authed(b'<cmd action="read_devices"/>')
+        assert 'defrost="1"' in authed(b'<cmd action="read_devices"/>')
+        sys.path.insert(0, HERE)
+        from honeypot import code_of_the_day
+        from datetime import datetime, timezone
+        good = code_of_the_day(datetime.now(timezone.utc).date())
+        _, _, xml = http("/xml.cgi", f'<cmd user="" password="{good}" action="getauth" eds_only="1"></cmd>'.encode())
+        assert "<session_token>" in xml
+        http("/xml.cgi", b'<cmd user="" password="00000" action="getauth" eds_only="1"></cmd>')
         http("/html/xml.cgi", b'<cmd action="getauth" user="\x1b[2Jx" password="p"/>')
         http("/" + "%ff" * 3000, "\xff".encode("latin-1") * 8000)
-        assert 'error="15"' in xml
         _, _, xml = http("/html/xml.cgi", b'<cmd action="read_date_time"/>')
         assert 'error="0"' in xml and "<year>" in xml
         http("/xml.cgi", b'<cmd action="get_file" filename="../../etc/shadow" offset="0"/>')
@@ -95,9 +120,12 @@ def test_danfoss(workdir):
 
         log = events(log_path)
         logins = [e for e in log if e["event"] == "login_attempt"]
-        assert logins[0]["username"] == "Superviseur" and logins[0]["password"] == "12345"
+        assert [(e["username"], e["granted"]) for e in logins[:2]] == [("nobody", False), ("Supervisor", True)]
         exploits = [e["exploit"] for e in log if e["event"] == "xml_cmd" and e["exploit"]]
-        assert exploits == ["CVE-2023-25914 path traversal", "CVE-2023-25915 command injection"]
+        assert exploits == ["CVE-2025-41450 code-of-the-day bypass, correct code",
+                            "CVE-2025-41450 code-of-the-day bypass",
+                            "CVE-2023-25914 path traversal", "CVE-2023-25915 command injection"]
+        assert any(e["event"] == "control" and e["defrost"] and e["node"] == "2" for e in log)
         assert any(e["proto"] == "https" and e["event"] == "request" for e in log)
         assert any(e["event"] == "tls_error" for e in log)
         assert any(e["event"] == "request" and e["method"] == "OPTIONS" for e in log)
@@ -108,6 +136,7 @@ def test_danfoss(workdir):
                                   "--ignore", "10.9.9.9", "--hours", "1"],
                                  stdin=open(log_path), capture_output=True, text=True, check=True).stdout
         assert "CVE-2023-25914 path traversal" in summary and "last 1h" in summary
+        assert "(accepted: 3)" in summary and "DEFROST" in summary
         assert "\x1b" not in summary
         with open(log_path, "rb") as f:
             assert max(len(line) for line in f) <= 9000
