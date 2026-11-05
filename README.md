@@ -53,6 +53,18 @@ python3 -I test_honeypot.py
 
 ## Deploying
 
+### Quickest: paste into "User data"
+
+Create an Ubuntu 24.04 server (a $4 DigitalOcean droplet is plenty) and paste [cloud-init.yaml](cloud-init.yaml) into the **User data** box. Change `PERSONA=danfoss` to `dixell` if you want the XWEB persona. About two minutes after boot the decoy is listening on port 80 (and 443 for Danfoss), hardened as below.
+
+Then, in your provider's firewall, allow only the decoy's ports from anywhere and SSH from your own address. Read the log with:
+
+```bash
+ssh root@<server> 'podman logs coldframe'
+```
+
+### By hand
+
 Build the container. Each build makes a fresh self-signed certificate, so two deployments never share one.
 
 ```bash

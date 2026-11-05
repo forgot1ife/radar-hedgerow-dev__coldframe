@@ -1,0 +1,32 @@
+#cloud-config
+# coldframe on a fresh Ubuntu 24.04 server: paste this file into the
+# "User data" box when you create the server (DigitalOcean, Hetzner, Vultr,
+# AWS, ...). About two minutes after boot the decoy is listening.
+#
+# Pick the persona on the PERSONA line below: danfoss or dixell.
+# Then restrict SSH to your own address in the provider's firewall.
+
+package_update: true
+packages: [podman, git]
+
+write_files:
+  - path: /etc/coldframe.env
+    content: |
+      PERSONA=danfoss
+
+runcmd:
+  - git clone --depth 1 https://github.com/hedgerow-dev/coldframe /opt/coldframe
+  # Lets --userns=auto map the container to an unused host UID range.
+  - grep -q '^containers:' /etc/subuid || echo 'containers:2147483647:2147483648' >> /etc/subuid
+  - grep -q '^containers:' /etc/subgid || echo 'containers:2147483647:2147483648' >> /etc/subgid
+  - podman build -t coldframe /opt/coldframe
+  - - sh
+    - -c
+    - |
+      . /etc/coldframe.env
+      if [ "$PERSONA" = danfoss ]; then ports="-p 80:8080 -p 443:8443"; https=8443; else ports="-p 80:8080"; https=0; fi
+      podman run -d --name coldframe --restart=always \
+        --read-only --cap-drop=ALL --security-opt no-new-privileges --userns=auto \
+        --memory 128m --pids-limit 512 --log-opt max-size=10m \
+        $ports -v coldframe-logs:/logs:U -e PERSONA="$PERSONA" -e HTTPS_PORT=$https coldframe
+  - systemctl enable --now podman-restart.service
