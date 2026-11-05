@@ -49,12 +49,18 @@ podman build -t coldframe .
 
 Run it with **rootful** podman or Docker. Rootless port forwarding rewrites the source address, which makes every attacker look like the same internal IP.
 
+`--userns=auto` maps the container to an unused host UID range, so even the container user is nobody on the host. Podman needs a range to hand out, once per host:
+
+```bash
+echo "containers:2147483647:2147483648" | sudo tee -a /etc/subuid /etc/subgid
+```
+
 ```bash
 sudo podman run -d --name coldframe --restart=always \
   --read-only --cap-drop=ALL --security-opt no-new-privileges --userns=auto \
   --memory 128m --pids-limit 512 --log-opt max-size=10m \
   -p 80:8080 -p 443:8443 \
-  -v coldframe-logs:/logs \
+  -v coldframe-logs:/logs:U \
   -e PERSONA=danfoss \
   coldframe
 ```
