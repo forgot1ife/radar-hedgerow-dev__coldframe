@@ -19,7 +19,7 @@ The Danfoss persona copies what internet scanners record for real AK-SM 800A uni
 
 Weak logins (for example `Supervisor` / `12345`) and a correct CVE-2025-41450 "code of the day" **succeed**. The attacker gets a session token and a dashboard of fake refrigerated cases with defrost buttons. Every action they take is logged as a `control` event; nothing is real.
 
-The Dixell persona follows real XWEB EVO units the same way: no `Server` header, their security-header set and order, the same asset paths and page size. Its login always fails.
+The Dixell persona follows real XWEB EVO units the same way: no `Server` header, their security-header set and order, the same asset paths and page size. Its login uses the real `/cgi-bin/login.lua` flow: the documented factory login `Admin` / `Admin` succeeds, five failures in five minutes lock the user, and attempts at the XWEB Pro `auth_mode` bypass (CVE-2026-25085) are tagged.
 
 Real units of both vendors serve their own favicon, and scanners match devices by its hash. That icon is the vendor's artwork, so it is not in this repository. For a private deployment you can point `FAVICON_FILE` at a copy you have the right to use.
 
@@ -35,6 +35,7 @@ Requests that match a public exploit get an `exploit` field in the log:
 - **CVE-2025-41450**: AK-SM 800A "code of the day" login bypass (`getauth` with `eds_only` or `quantum_only`), noting whether the attacker computed the correct code
 - **SM800 code-of-the-day bypass**: `eds_only` / `quantum_only` on other commands
 - **CVE-2021-45420**: XWEB 500 upload and command paths under `/cgi-bin/`
+- **CVE-2026-25085**: XWEB Pro login bypass via an unexpected `auth_mode`
 
 ## Quick start
 
@@ -140,6 +141,8 @@ python3 -I summary.py --hours 24 --ignore <your-own-ip> < events.jsonl
 - Synacktiv, SM800 auth bypass: https://www.synacktiv.com/sites/default/files/2023-10/synacktiv-danfoss-sm800-sc255-sc355-auth-bypass.pdf
 - Claroty Team82, Danfoss controller research (CVE-2025-41450 to 41452): https://blog.claroty.com/team82/research/freeze-the-controller-defrost-the-food-uncovering-vulnerabilities-in-danfoss-refrigeration-controllers
 - Exploit-DB 50639, XWEB 500 (CVE-2021-45420): https://www.exploit-db.com/exploits/50639
+- Copeland XWEB EVO operation manual r5.4.1 (default login, lockout): https://webapps.copeland.com/Dixell/Content/Pages/Manuals/XWEBEVO/XWEBEVOV5.4.1OPERATION/XWEB-EVO-r5.4.1-OPR-EN.pdf
+- CISA ICSA-26-057-10 and Claroty Team82, XWEB Pro vulnerabilities: https://claroty.com/team82/research/chilling-discoveries-unpacking-vulnerabilities-in-copeland-xweb-pro-controllers
 - Ironhackers, CVE-2025-41450 code-of-the-day analysis: https://ironhackers.es/en/danfoss-ak-sm-800a-cve-2025-41450/
 - Shodan records of exposed units (header set, title, certificate fields), November 2026
 
