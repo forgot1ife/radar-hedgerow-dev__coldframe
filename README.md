@@ -11,7 +11,7 @@ It is one Python file with no dependencies outside the standard library.
 | Persona | Pretends to be | What it serves |
 |---|---|---|
 | `danfoss` | Danfoss AK-SM 800A system manager | StoreView login, a fake store dashboard, the XML API at `/html/xml.cgi` and `/xml.cgi`, HTTP and HTTPS |
-| `dixell` | Copeland/Dixell XWEB 500 supervisor | Login page and the CGI paths targeted by public exploits |
+| `dixell` | Copeland/Dixell XWEB EVO supervisor | Login page and the XWEB 500 CGI paths targeted by public exploits |
 
 ### Looking like a real unit
 
@@ -19,7 +19,9 @@ The Danfoss persona copies what internet scanners record for real AK-SM 800A uni
 
 Weak logins (for example `Supervisor` / `12345`) and a correct CVE-2025-41450 "code of the day" **succeed**. The attacker gets a session token and a dashboard of fake refrigerated cases with defrost buttons. Every action they take is logged as a `control` event; nothing is real.
 
-Real units serve a Danfoss favicon, and scanners match devices by its hash. That icon is Danfoss artwork, so it is not in this repository. For a private deployment you can point `FAVICON_FILE` at a copy you have the right to use.
+The Dixell persona follows real XWEB EVO units the same way: no `Server` header, their security-header set and order, the same asset paths and page size. Its login always fails.
+
+Real units of both vendors serve their own favicon, and scanners match devices by its hash. That icon is the vendor's artwork, so it is not in this repository. For a private deployment you can point `FAVICON_FILE` at a copy you have the right to use.
 
 Both personas can also run an optional **Modbus TCP** service with fake case temperatures, setpoints and a defrost register. Real AK-SM 800A units only use Modbus to talk to their own case controllers, so Modbus is off by default. Turn it on to catch generic industrial scanners.
 
