@@ -402,14 +402,16 @@ DIXELL_LOGIN = """<!DOCTYPE html>
 #login-logo{font:bold 26px Arial;letter-spacing:1px;color:#fff;margin-bottom:4px}
 #login-sysname{color:#9fb0c0;font-size:13px;margin-bottom:22px}
 .input{width:100%;box-sizing:border-box;margin:0 0 12px;padding:9px;border:1px solid #3b4a5a;background:#1d2733;color:#fff}
-#login-language{width:100%;margin:0 0 16px;padding:8px;background:#1d2733;color:#fff;border:1px solid #3b4a5a}
+#login-mode,#login-language{width:100%;margin:0 0 16px;padding:8px;background:#1d2733;color:#fff;border:1px solid #3b4a5a}
 #login-button{width:100%;padding:10px;border:0;background:#0f7bc0;color:#fff;font-weight:bold;cursor:pointer}
 #login-error{color:#ff6b6b;font-size:13px;min-height:16px;margin-top:12px}
 #login-date,#login-macaddress{font-size:11px;color:#71849a;margin-top:6px}</style></head>
-<body><div id="login-screen"><div id="login-logo">XWEB EVO</div><div id="login-sysname">XWEB-0412</div>
+<body><div id="login-screen"><div id="login-logo"><img src="img/xweb-logo.png" alt="XWEB EVO"></div>
+<div id="login-sysname">XWEB-0412</div><div id="login-lock"></div><div id="login-alarms"></div>
 <form id="login-form" action="javascript:return false;" autocomplete="off">
 <input id="login-username" type="text" placeholder="username" class="input" autofocus required>
 <input id="login-password" type="password" placeholder="password" class="input" required>
+<select id="login-mode"><option value="standard">standard</option><option value="ldap">ldap</option></select>
 <select id="login-language"><option>English</option><option>Italiano</option><option>Deutsch</option><option>Fran&ccedil;ais</option><option>Espa&ntilde;ol</option></select>
 <button id="login-button" type="submit">Login</button><div id="login-error"></div></form>
 <div id="login-date"></div><div id="login-macaddress">MAC 00:1a:22:6b:0e:41</div></div>
@@ -417,9 +419,15 @@ DIXELL_LOGIN = """<!DOCTYPE html>
 <script>
 document.getElementById('login-date').textContent=new Date().toLocaleString();
 document.getElementById('login-form').onsubmit=function(ev){ev.preventDefault();
-var b='username='+encodeURIComponent(document.getElementById('login-username').value)+'&password='+encodeURIComponent(document.getElementById('login-password').value);
-fetch('/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b}).then(function(){
-document.getElementById('login-error').textContent='Login failed'})};
+function v(id){return encodeURIComponent(document.getElementById(id).value)}
+function post(url,b){return fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b}).then(function(r){return r.json()})}
+var b='action=login&auth_mode='+v('login-mode')+'&username='+v('login-username')+'&password='+v('login-password')+'&initparam=-1';
+post('cgi-bin/login.lua',b).then(function(j){if(!j.user){document.getElementById('login-error').textContent=j.locked?'User locked, retry later':'Login failed';return}
+var ses=j.user.sses,now=Math.floor(Date.now()/1000);
+post('cgi-bin/datachart.cgi','SSES='+ses+'&source=circular&startTS='+(now-600)+'&stopTS='+now+'&request=1').then(function(d){
+var h='<div id="system-name">XWEB EVO</div><table id="devices"><tr><th>Address</th><th>Temperature</th></tr>';
+Object.keys(d).forEach(function(a){var r=d[a][d[a].length-1];h+='<tr><td>'+a+'</td><td>'+r['1']+' &deg;C</td></tr>'});
+document.body.innerHTML=h+'</table>'})})};
 </script></body></html>"""
 
 # Assets the real page loads. Served empty so the page does not trail 404s.
@@ -429,6 +437,7 @@ DIXELL_SCRIPTS = ["lib/jquery.min.js", "lib/jquery.fileDownload.js", "lib/dialog
                   "xweb.js", "streammanager.js"]
 DIXELL_ASSETS = {f"/js/{name}": "application/javascript" for name in DIXELL_SCRIPTS}
 DIXELL_ASSETS.update({f"/css/{name}": "text/css" for name in ("icons.css", "style.min.css", "fullcalendar.css")})
+DIXELL_ASSETS["/img/xweb-logo.png"] = "image/png"  # scanners fingerprint XWEB EVO by this path
 DIXELL_LOGIN = DIXELL_LOGIN.replace("{scripts}", "".join(f'<script src="js/{n}"></script>' for n in DIXELL_SCRIPTS))
 DIXELL_LOGIN += "\n" * (8202 - len(DIXELL_LOGIN.encode()))  # real pages are 8202 bytes
 
@@ -449,6 +458,52 @@ DIXELL_HEADERS = [
     ("X-XSS-Protection", "1; mode=block"),
     ("X-UA-Compatible", "IE=edge"),
 ]
+
+# Login follows the real XWEB EVO flow: POST /cgi-bin/login.lua, JSON reply with
+# a session id in user.sses, then data calls carrying SSES. Admin/Admin is the
+# documented factory login. Exact reply fields beyond user.sses are not public.
+DIXELL_WEAK_LOGINS = {("admin", "Admin"), ("Admin", "Admin"), ("admin", "admin")}
+LOCKOUT_TRIES, LOCKOUT_SECONDS = 5, 300  # 5 failures in 5 minutes locks the user, as documented
+_failures = {}  # username -> recent failure times
+_failures_lock = threading.Lock()
+
+
+def dixell_login(src, proto, body):
+    form = parse_qs(body, keep_blank_values=True)
+    user = form.get("username", [""])[0][:64]
+    password = form.get("password", [""])[0]
+    mode = form.get("auth_mode", [""])[0]
+    exploit = ""
+    if mode not in ("", "standard", "ldap"):
+        exploit = "CVE-2026-25085 auth_mode bypass (XWEB Pro)"
+    now = time.monotonic()
+    with _failures_lock:
+        recent = [t for t in _failures.get(user, []) if now - t < LOCKOUT_SECONDS]
+        locked = len(recent) >= LOCKOUT_TRIES
+        granted = not locked and (user, password) in DIXELL_WEAK_LOGINS
+        if not granted and not locked:
+            recent.append(now)
+        if len(_failures) > 10000:
+            _failures.clear()
+        _failures[user] = recent
+    log(proto, src, "login_attempt", username=user, password=password, auth_mode=mode,
+        granted=granted, locked=locked, exploit=exploit)
+    time.sleep(random.uniform(0.6, 1.4))
+    if granted:
+        return json.dumps({"result": "ok", "user": {"username": user, "level": "admin", "sses": new_session()}})
+    return json.dumps({"result": "error", "code": 401, "locked": locked})
+
+
+def dixell_datachart(src, proto, body):
+    form = parse_qs(body, keep_blank_values=True)
+    authed = has_session(form.get("SSES", [""])[0])
+    log(proto, src, "datachart", session=authed, request=form.get("request", [""])[0])
+    if not authed:
+        return None  # an expired session gets the login page, as on real units
+    ts = int(time.time())
+    return json.dumps({str(n + 1): [{"ts": ts, "rf": 0, "1": round(t / 10, 1)}]
+                       for n, (t, _sp, _d) in enumerate(case_status())})
+
 
 # Paths used by the public CVE-2021-45420 exploit (Exploit-DB 50639).
 DIXELL_EXPLOIT_PATHS = {
@@ -562,12 +617,11 @@ class DecoyHTTP(BaseHTTPRequestHandler):
         if path in DIXELL_ASSETS:
             return self.reply(200, b"", DIXELL_ASSETS[path])
 
-        if path == "/login" and self.command == "POST":
-            form = parse_qs(body, keep_blank_values=True)
-            log(self.proto, self.client_address, "login_attempt",
-                username=form.get("username", [""])[0], password=form.get("password", [""])[0])
-            time.sleep(random.uniform(0.6, 1.4))
-            return self.reply(200, '{"result":"error","code":401}', "application/json")
+        if path in ("/cgi-bin/login.lua", "/login") and self.command == "POST":
+            return self.reply(200, dixell_login(self.client_address, self.proto, body), "application/json")
+        if path == "/cgi-bin/datachart.cgi" and self.command == "POST":
+            data = dixell_datachart(self.client_address, self.proto, body)
+            return self.reply(200, data, "application/json") if data else self.reply(200, DIXELL_LOGIN, "text/html")
         if exploit:
             return self.reply(200, "")
         if path in ("/", "/index.html"):

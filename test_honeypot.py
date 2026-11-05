@@ -153,7 +153,17 @@ def test_dixell(workdir):
         assert "Server" not in headers and list(headers.keys())[0] == "Content-Type"
         assert list(headers.keys())[-2:] == ["Content-Length", "Date"]
         assert http("/js/xweb.js")[0] == 200 and headers["Content-Length"] == "8202"
-        assert '"result":"error"' in http("/login", b"username=admin&password=admin")[2]
+        assert 'src="img/xweb-logo.png"' in page and 'id="login-mode"' in page
+        assert '"user"' not in http("/cgi-bin/login.lua", b"action=login&auth_mode=standard&username=admin&password=x&initparam=-1")[2]
+        reply = json.loads(http("/cgi-bin/login.lua", b"action=login&auth_mode=standard&username=Admin&password=Admin&initparam=-1")[2])
+        sses = reply["user"]["sses"]
+        chart = json.loads(http("/cgi-bin/datachart.cgi", f"SSES={sses}&source=circular&request=1".encode())[2])
+        assert len(chart) == 8 and "1" in chart["1"][0]
+        assert 'id="login-screen"' in http("/cgi-bin/datachart.cgi", b"SSES=bogus")[2]
+        for _ in range(5):
+            http("/cgi-bin/login.lua", b"action=login&username=Root&password=guess")
+        assert '"locked": true' in http("/cgi-bin/login.lua", b"action=login&username=Root&password=guess")[2]
+        http("/cgi-bin/login.lua", b"action=login&auth_mode=x&username=a&password=b")
         assert "<script>x" not in http("/<script>x</script>")[2]
         assert http("/cgi-bin/lo_utils.cgi", b"ACTION=5")[0] == 200
 
@@ -177,8 +187,10 @@ def test_dixell(workdir):
         log = events(log_path)
         kinds = {(e["proto"], e["event"]) for e in log}
         logins = [e for e in log if e["event"] == "login_attempt"]
-        assert logins[0]["username"] == "admin" and logins[0]["password"] == "admin"
+        assert (logins[0]["username"], logins[0]["password"], logins[0]["granted"]) == ("admin", "x", False)
         assert any(e.get("exploit") == "CVE-2021-45420 command execution" for e in log)
+        assert any(e.get("exploit", "").startswith("CVE-2026-25085") for e in log)
+        assert any(e["event"] == "login_attempt" and e["granted"] for e in log)
         writes = [e for e in log if e["event"] == "write"]
         assert writes[0]["defrost"] is True and writes[0]["start"] == 200
         assert writes[1]["values"] == [800] and writes[1]["defrost"] is False
