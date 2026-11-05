@@ -148,8 +148,12 @@ def test_danfoss(workdir):
 def test_dixell(workdir):
     proc, log_path = start("dixell", workdir, MODBUS_PORT=MODBUS_PORT)
     try:
-        assert "XWEB500" in http("/")[2]
-        assert "Invalid user name" in http("/login", b"username=admin&password=admin")[2]
+        status, headers, page = http("/")
+        assert "<title>XWEB EVO</title>" in page and 'id="login-username"' in page
+        assert "Server" not in headers and list(headers.keys())[0] == "Content-Type"
+        assert list(headers.keys())[-2:] == ["Content-Length", "Date"]
+        assert http("/js/xweb.js")[0] == 200 and headers["Content-Length"] == "8202"
+        assert '"result":"error"' in http("/login", b"username=admin&password=admin")[2]
         assert "<script>x" not in http("/<script>x</script>")[2]
         assert http("/cgi-bin/lo_utils.cgi", b"ACTION=5")[0] == 200
 

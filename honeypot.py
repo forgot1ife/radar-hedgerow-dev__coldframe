@@ -68,13 +68,11 @@ PERSONAS = {
                      "</body>\r\n</html>\r\n",
     },
     "dixell": {
-        "server": "Apache",
+        "server": "",  # most real XWEB EVO units send no Server header
         "vendor": "Dixell",
-        "product": "XWEB500",
+        "product": "XWEB EVO",
         "firmware": "1.8.2",
-        "not_found": '<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\n<html><head>\n'
-                     "<title>404 Not Found</title>\n</head><body>\n<h1>Not Found</h1>\n"
-                     "<p>The requested URL was not found on this server.</p>\n</body></html>\n",
+        "not_found": "<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1></body></html>",
     },
 }
 P = PERSONAS[PERSONA]
@@ -390,19 +388,67 @@ def danfoss_xml(src, proto, body, headers):
     return head + f'<resp action="{act}" error="0"/>'
 
 
-# --- Dixell XWEB 500 ----------------------------------------------------------
+# --- Dixell XWEB EVO ---------------------------------------------------------
+# Element ids and asset paths follow real XWEB EVO login pages (Shodan, Nov 2026);
+# the markup and styling here are our own.
 
 DIXELL_LOGIN = """<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>XWEB500</title>
-<style>body{{font-family:Arial,sans-serif;background:#eef1f4;margin:0}}
-.box{{width:320px;margin:120px auto;background:#fff;padding:24px;border:1px solid #c8ced6}}
-h1{{font-size:18px;margin:0 0 16px}}input{{width:100%;margin:6px 0 12px;padding:6px}}
-.err{{color:#b00020;font-size:13px}}</style>
-</head><body><div class="box"><h1>XWEB500</h1>{error}
-<form method="post" action="/login">
-<label>User name<input name="username" autocomplete="off"></label>
-<label>Password<input name="password" type="password"></label>
-<input type="submit" value="Log in"></form></div></body></html>"""
+<html><head><meta charset="utf-8"><title>XWEB EVO</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="img/icons/icon16.ico"><link rel="stylesheet" href="css/icons.css">
+<link rel="stylesheet" href="css/style.min.css"><link rel="stylesheet" href="css/fullcalendar.css">
+<style>body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#1d2733;color:#e6ebf0}
+#login-screen{width:340px;margin:90px auto;background:#26323f;padding:28px;border-radius:4px}
+#login-logo{font:bold 26px Arial;letter-spacing:1px;color:#fff;margin-bottom:4px}
+#login-sysname{color:#9fb0c0;font-size:13px;margin-bottom:22px}
+.input{width:100%;box-sizing:border-box;margin:0 0 12px;padding:9px;border:1px solid #3b4a5a;background:#1d2733;color:#fff}
+#login-language{width:100%;margin:0 0 16px;padding:8px;background:#1d2733;color:#fff;border:1px solid #3b4a5a}
+#login-button{width:100%;padding:10px;border:0;background:#0f7bc0;color:#fff;font-weight:bold;cursor:pointer}
+#login-error{color:#ff6b6b;font-size:13px;min-height:16px;margin-top:12px}
+#login-date,#login-macaddress{font-size:11px;color:#71849a;margin-top:6px}</style></head>
+<body><div id="login-screen"><div id="login-logo">XWEB EVO</div><div id="login-sysname">XWEB-0412</div>
+<form id="login-form" action="javascript:return false;" autocomplete="off">
+<input id="login-username" type="text" placeholder="username" class="input" autofocus required>
+<input id="login-password" type="password" placeholder="password" class="input" required>
+<select id="login-language"><option>English</option><option>Italiano</option><option>Deutsch</option><option>Fran&ccedil;ais</option><option>Espa&ntilde;ol</option></select>
+<button id="login-button" type="submit">Login</button><div id="login-error"></div></form>
+<div id="login-date"></div><div id="login-macaddress">MAC 00:1a:22:6b:0e:41</div></div>
+{scripts}
+<script>
+document.getElementById('login-date').textContent=new Date().toLocaleString();
+document.getElementById('login-form').onsubmit=function(ev){ev.preventDefault();
+var b='username='+encodeURIComponent(document.getElementById('login-username').value)+'&password='+encodeURIComponent(document.getElementById('login-password').value);
+fetch('/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b}).then(function(){
+document.getElementById('login-error').textContent='Login failed'})};
+</script></body></html>"""
+
+# Assets the real page loads. Served empty so the page does not trail 404s.
+DIXELL_SCRIPTS = ["lib/jquery.min.js", "lib/jquery.fileDownload.js", "lib/dialog-polyfill.js",
+                  "lib/moment.min.js", "lib/plotly.min.js", "lib/snapsvg.min.js", "lib/jszip.min.js",
+                  "lib/fullcalendar.js", "lib/quantum.bundle.min.js", "lib/AdvancedWebSocket.min.js",
+                  "xweb.js", "streammanager.js"]
+DIXELL_ASSETS = {f"/js/{name}": "application/javascript" for name in DIXELL_SCRIPTS}
+DIXELL_ASSETS.update({f"/css/{name}": "text/css" for name in ("icons.css", "style.min.css", "fullcalendar.css")})
+DIXELL_LOGIN = DIXELL_LOGIN.replace("{scripts}", "".join(f'<script src="js/{n}"></script>' for n in DIXELL_SCRIPTS))
+DIXELL_LOGIN += "\n" * (8202 - len(DIXELL_LOGIN.encode()))  # real pages are 8202 bytes
+
+# Header set and order seen on most real XWEB EVO units; note no Server header.
+DIXELL_HEADERS = [
+    ("Cache-Control", "no-store, max-age=0"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("X-Robots-Tag", "noindex, nofollow"),
+    ("X-Permitted-Cross-Domain-Policies", "none"),
+    ("Content-Security-Policy", "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' "
+     "'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src "
+     "'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; report-uri 'none'"),
+    ("Feature-Policy", "camera 'none'; microphone 'none'; geolocation 'none'"),
+    ("Permissions-Policy", "camera 'none'; microphone 'none'; geolocation 'none'"),
+    ("Referrer-Policy", "no-referrer"),
+    ("Vary", "User-Agent"),
+    ("X-Frame-Options", "DENY"),
+    ("X-XSS-Protection", "1; mode=block"),
+    ("X-UA-Compatible", "IE=edge"),
+]
 
 # Paths used by the public CVE-2021-45420 exploit (Exploit-DB 50639).
 DIXELL_EXPLOIT_PATHS = {
@@ -442,6 +488,18 @@ class DecoyHTTP(BaseHTTPRequestHandler):
 
     def reply(self, status, body, content_type="text/html; charset=utf-8", static=False):
         data = body.encode() if isinstance(body, str) else body
+        if PERSONA == "dixell":
+            self.send_response_only(status)  # no Server header; Date goes last
+            self.send_header("Content-Type", content_type)
+            for name, value in DIXELL_HEADERS:
+                self.send_header(name, value)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Date", self.date_time_string())
+            self.close_connection = True
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+            return
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
@@ -499,17 +557,21 @@ class DecoyHTTP(BaseHTTPRequestHandler):
                 return self.reply(200, FAVICON, "image/x-icon", static=True)
             return self.reply(404, P["not_found"])
 
+        if path in ("/favicon.ico", "/img/icons/icon16.ico") and FAVICON:
+            return self.reply(200, FAVICON, "image/x-icon")
+        if path in DIXELL_ASSETS:
+            return self.reply(200, b"", DIXELL_ASSETS[path])
+
         if path == "/login" and self.command == "POST":
             form = parse_qs(body, keep_blank_values=True)
             log(self.proto, self.client_address, "login_attempt",
                 username=form.get("username", [""])[0], password=form.get("password", [""])[0])
             time.sleep(random.uniform(0.6, 1.4))
-            return self.reply(200, DIXELL_LOGIN.format(
-                error='<p class="err">Invalid user name or password.</p>'))
+            return self.reply(200, '{"result":"error","code":401}', "application/json")
         if exploit:
             return self.reply(200, "")
         if path in ("/", "/index.html"):
-            return self.reply(200, DIXELL_LOGIN.format(error=""))
+            return self.reply(200, DIXELL_LOGIN, "text/html")
         return self.reply(404, P["not_found"])
 
     do_GET = do_POST = do_HEAD = do_PUT = do_DELETE = do_OPTIONS = do_PATCH = do_TRACE = handle_any
