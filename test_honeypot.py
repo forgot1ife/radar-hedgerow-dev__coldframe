@@ -201,8 +201,36 @@ def test_dixell(workdir):
         proc.wait(timeout=5)
 
 
+def test_danfoss_index_file(workdir):
+    # A stand-in for the firmware's index.html: same shape, not the vendor's bytes.
+    index = os.path.join(workdir, "index.html")
+    page = (b'<!doctype html>\n<html><head><title>Danfoss StoreView</title>'
+            b'<link rel="stylesheet" href="styles.aaa.css"></head><body><app-root></app-root>'
+            b'<script src="runtime.bbb.js"></script><script src="main.ccc.js"></script></body></html>\n')
+    with open(index, "wb") as f:
+        f.write(page)
+    os.utime(index, (0x688B26F2, 0x688B26F2))
+    proc, log_path = start("danfoss", workdir, INDEX_FILE=index)
+    try:
+        status, headers, body = http("/")
+        assert status == 200 and body.encode() == page
+        assert headers["ETag"] == f'"688b26f2-{len(page):x}"'
+        assert headers["Last-Modified"] == "Thu, 31 Jul 2025 08:18:58 GMT"
+        status, headers, js = http("/main.ccc.js")
+        assert status == 200 and "Danfoss System Manager - SM800A" in js
+        assert headers["ETag"].startswith('"688b26f2-')
+        assert http("/runtime.bbb.js")[:3:2] == (200, "")
+        status, headers, css = http("/styles.aaa.css")
+        assert status == 200 and headers["Content-Type"] == "text/css"
+        assert http("/main.zzz.js")[0] == 404
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     workdir = tempfile.mkdtemp()
     test_danfoss(workdir)
+    test_danfoss_index_file(workdir)
     test_dixell(workdir)
     print("OK: both personas")

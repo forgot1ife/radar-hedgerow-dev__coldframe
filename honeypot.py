@@ -44,6 +44,8 @@ LOG_PATH = os.environ.get("LOG_PATH", "events.jsonl")
 # Optional: the real device's favicon, for private deployments only. It is the
 # vendor's artwork, so it is not shipped in this repository.
 FAVICON_FILE = os.environ.get("FAVICON_FILE", "")
+# Optional, same terms: the firmware's index.html (see BUNDLES below).
+INDEX_FILE = os.environ.get("INDEX_FILE", "")
 
 MAX_BODY = 8192        # bytes of request body we will read
 MAX_FIELD = 512        # chars of any logged string
@@ -77,10 +79,11 @@ PERSONAS = {
 }
 P = PERSONAS[PERSONA]
 FIRMWARE_MTIME = 0x6A198BB7  # Fri, 29 May 2026 12:51:03 GMT, as on a real unit
-FAVICON = b""
+FAVICON, FAVICON_MTIME = b"", FIRMWARE_MTIME
 if FAVICON_FILE:
     with open(FAVICON_FILE, "rb") as f:
         FAVICON = f.read(65536)
+        FAVICON_MTIME = int(os.fstat(f.fileno()).st_mtime)
 
 _log_lock = threading.Lock()
 _slots_lock = threading.Lock()
@@ -261,6 +264,23 @@ var b='<cmd action="getauth" user="'+x(document.getElementById('u').value)+'" pa
 api(b).then(function(d){var t=d.getElementsByTagName('session_token')[0];
 if(t){tok=t.textContent;dash()}else{document.getElementById('e').textContent='Invalid user name or password'}})};
 </script></body></html>"""
+
+# With INDEX_FILE, "/" is the firmware's own index.html, byte for byte, so the
+# page hash matches thousands of real units. Its main.*.js swaps in the login
+# page above; the other bundles it names are served empty.
+INDEX, INDEX_MTIME, BUNDLES = b"", FIRMWARE_MTIME, {}
+if INDEX_FILE:
+    with open(INDEX_FILE, "rb") as f:
+        INDEX = f.read(65536)
+        INDEX_MTIME = int(os.fstat(f.fileno()).st_mtime)
+    for name in re.findall(r'(?:src|href)="([\w.~-]+\.(?:js|css))"', INDEX.decode("latin-1")):
+        if name.endswith(".css"):
+            BUNDLES["/" + name] = (b"", "text/css")
+        elif name.startswith("main."):
+            js = "addEventListener('DOMContentLoaded',function(){document.open();document.write(%s);document.close()});\n"
+            BUNDLES["/" + name] = ((js % json.dumps(DANFOSS_LOGIN)).encode(), "application/javascript")
+        else:
+            BUNDLES["/" + name] = (b"", "application/javascript")
 
 NOT_ALLOWED = ("<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n"
                "<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n")
@@ -541,7 +561,7 @@ class DecoyHTTP(BaseHTTPRequestHandler):
     def proto(self):
         return "https" if isinstance(self.request, ssl.SSLSocket) else "http"
 
-    def reply(self, status, body, content_type="text/html; charset=utf-8", static=False):
+    def reply(self, status, body, content_type="text/html; charset=utf-8", static=False, mtime=FIRMWARE_MTIME):
         data = body.encode() if isinstance(body, str) else body
         if PERSONA == "dixell":
             self.send_response_only(status)  # no Server header; Date goes last
@@ -560,9 +580,9 @@ class DecoyHTTP(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         if static and PERSONA == "danfoss":
             # Header set and order seen on real AK-SM 800A units (Shodan, Nov 2026).
-            self.send_header("Last-Modified", formatdate(FIRMWARE_MTIME, usegmt=True))
+            self.send_header("Last-Modified", formatdate(mtime, usegmt=True))
             self.send_header("Connection", "keep-alive")
-            self.send_header("ETag", f'"{FIRMWARE_MTIME:x}-{len(data):x}"')
+            self.send_header("ETag", f'"{mtime:x}-{len(data):x}"')
             for name, value in DANFOSS_STATIC_HEADERS:
                 self.send_header(name, value)
         else:
@@ -607,9 +627,14 @@ class DecoyHTTP(BaseHTTPRequestHandler):
                     return self.reply(204, b"", "text/plain")
                 return self.reply(405, NOT_ALLOWED, "text/html")
             if path in ("/", "/index.html"):
+                if INDEX:
+                    return self.reply(200, INDEX, "text/html", static=True, mtime=INDEX_MTIME)
                 return self.reply(200, DANFOSS_LOGIN, "text/html", static=True)
+            if path in BUNDLES:
+                data, ctype = BUNDLES[path]
+                return self.reply(200, data, ctype, static=True, mtime=INDEX_MTIME)
             if path == "/favicon.ico" and FAVICON:
-                return self.reply(200, FAVICON, "image/x-icon", static=True)
+                return self.reply(200, FAVICON, "image/x-icon", static=True, mtime=FAVICON_MTIME)
             return self.reply(404, P["not_found"])
 
         if path in ("/favicon.ico", "/img/icons/icon16.ico") and FAVICON:
