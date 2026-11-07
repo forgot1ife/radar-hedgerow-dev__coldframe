@@ -51,7 +51,7 @@ MAX_BODY = 8192        # bytes of request body we will read
 MAX_FIELD = 512        # chars of any logged string
 MAX_LINE = 8192        # bytes of one log line, after JSON escaping
 MAX_CONNS = 256        # concurrent connections across all services
-MAX_PER_IP = 8         # concurrent connections from one source address
+MAX_PER_IP = 16        # concurrent connections from one source address
 MAX_LOG_BYTES = 256 * 1024 * 1024  # rotate past this size...
 LOG_KEEP = 4           # ...keeping LOG_PATH.1 to LOG_PATH.4
 SOCKET_TIMEOUT = 15    # seconds of silence before a socket is dropped
@@ -213,38 +213,34 @@ def log(proto, src, event, **details):
 
 
 # --- Danfoss AK-SM 800A -------------------------------------------------------
-# Layout follows the local-screen login in the AK-SM 800A user guide.
+# Layout follows the remote (SvB5) login of AK-SM 800A firmware 4.3.1.
 
 DANFOSS_LOGIN = """<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Danfoss StoreView</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{margin:0;font-family:Arial,Helvetica,sans-serif;background:#fff;color:#333}
+<style>body{margin:0;font-family:Raleway,"Helvetica Neue",Helvetica,Arial,sans-serif;background:#f0f0f0;color:#000}
 .bar{background:#e2000f;color:#fff;font-size:12px;text-align:right;padding:4px 10px;height:14px}
-.box{width:300px;margin:60px auto;text-align:center}
-.brand{color:#e2000f;font:italic bold 30px Georgia,serif;margin-bottom:18px}
-h1{color:#e2000f;font-size:15px;margin:0 0 22px}
-.row{display:flex;align-items:center;justify-content:center;margin:10px 0;font-size:13px}
-.row label{width:80px;text-align:left}.row input[type=text],.row input[type=password]{width:170px;padding:6px;border:1px solid #bbb}
-.show{position:absolute;margin-left:300px;font-size:12px;color:#888}
-button{display:block;width:194px;margin:12px 0 0 80px;padding:8px;font-size:13px;border:1px solid #bbb;background:#fff;cursor:pointer}
-.forgot{background:#eee;color:#999}.signin{background:#323a45;color:#fff;font-weight:bold;margin-top:28px}
-.err{color:#e2000f;font-size:12px;min-height:16px;margin-top:14px}
-.dash{max-width:760px;margin:24px auto;font-size:13px}.dash h1{text-align:left}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px;border-bottom:1px solid #ddd}
-th{background:#323a45;color:#fff;font-weight:normal}td button{width:auto;margin:0;padding:3px 8px}</style></head>
-<body><div class="bar" id="clock"></div><div class="box">
-<div class="brand">Danfoss</div><h1>Danfoss System Manager - SM800A</h1>
-<form id="f"><div class="row"><label for="u">User name</label><input type="text" id="u" autocomplete="off"></div>
-<div class="row"><label for="p">Password</label><input type="password" id="p">
-<label class="show"><input type="checkbox" id="s"> Show</label></div>
-<button type="button" class="forgot">Forgot credentials..</button>
-<button type="submit" class="signin">Sign In</button><button type="reset">Cancel</button>
+.box{width:380px;margin:80px auto;text-align:center}
+.brand{color:#e2000f;font:italic bold 72px Georgia,serif;line-height:156px}
+.title{color:#f00e0e;font:bold 34px sans-serif;margin:30px 0 64px}
+.ver{font-size:13px;color:#666;margin-bottom:24px}.ver b{font-size:17px;color:#000;margin-right:4px}
+input{display:block;box-sizing:border-box;width:330px;height:40px;margin:7px auto;padding:6px 12px;font-size:14px;font-family:inherit;border:1px solid #ccc;background:#fefefe}
+.signin{margin-top:28px;background:#323232;color:#fff;font-weight:500;border:0;cursor:pointer}
+.err{color:#e2000f;font-size:13px;min-height:16px;margin-top:14px}
+.dash{max-width:760px;margin:24px auto;font-size:13px}.dash h1{color:#e2000f;font-size:15px;text-align:left}
+table{width:100%;border-collapse:collapse;background:#fff}th,td{text-align:left;padding:7px;border-bottom:1px solid #ddd}
+th{background:#323a45;color:#fff;font-weight:normal}td button{padding:3px 8px;font-size:12px;border:1px solid #bbb;background:#fff;cursor:pointer}</style></head>
+<body><div class="box">
+<img src="assets/images/Danfoss-logo.png" alt="Danfoss" width="380" onerror="this.outerHTML='<div class=brand>Danfoss</div>'">
+<div class="title">System Manager 800A</div><div class="ver"><b>Version</b>SVB501.0.168</div>
+<form id="f"><input type="text" id="u" placeholder="Username" autocomplete="off">
+<input type="password" id="p" placeholder="Password">
+<input type="submit" class="signin" value="Sign In">
 <div class="err" id="e"></div></form></div>
 <script>
-function tick(){var d=new Date(),p=function(n){return(n<10?'0':'')+n},h=d.getHours();
-document.getElementById('clock').textContent=p(d.getMonth()+1)+'/'+p(d.getDate())+'/'+String(d.getFullYear()).slice(2)+' '+p(h%12||12)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+(h<12?' AM':' PM')}
-tick();setInterval(tick,1000);
-document.getElementById('s').onchange=function(){document.getElementById('p').type=this.checked?'text':'password'};
+function tick(){var c=document.getElementById('clock');if(!c)return;var d=new Date(),p=function(n){return(n<10?'0':'')+n},h=d.getHours();
+c.textContent=p(d.getMonth()+1)+'/'+p(d.getDate())+'/'+String(d.getFullYear()).slice(2)+' '+p(h%12||12)+':'+p(d.getMinutes())+':'+p(d.getSeconds())+(h<12?' AM':' PM')}
+setInterval(tick,1000);
 function x(s){return s.replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;')}
 var tok='';
 function api(cmd){return fetch('/html/xml.cgi',{method:'POST',headers:{'Content-Type':'text/xml','AKSM-Auth':tok},body:cmd})
@@ -281,6 +277,11 @@ if INDEX_FILE:
             BUNDLES["/" + name] = ((js % json.dumps(DANFOSS_LOGIN)).encode(), "application/javascript")
         else:
             BUNDLES["/" + name] = (b"", "application/javascript")
+    # The login page's logo, if the firmware's copy sits beside index.html.
+    logo = os.path.join(os.path.dirname(INDEX_FILE), "assets", "images", "Danfoss-logo.png")
+    if os.path.isfile(logo):
+        with open(logo, "rb") as f:
+            BUNDLES["/assets/images/Danfoss-logo.png"] = (f.read(1 << 20), "image/png")
 
 NOT_ALLOWED = ("<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n"
                "<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n")

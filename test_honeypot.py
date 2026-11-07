@@ -61,7 +61,7 @@ def test_danfoss(workdir):
     proc, log_path = start("danfoss", workdir, HTTPS_PORT=HTTPS_PORT, CERT_FILE=cert, KEY_FILE=key)
     try:
         status, headers, page = http("/")
-        assert status == 200 and "Danfoss System Manager - SM800A" in page
+        assert status == 200 and "System Manager 800A" in page
         assert headers["ETag"].startswith('"6a198bb7-') and headers["Connection"] == "keep-alive"
         assert headers["Server"] == "nginx" and "<title>Danfoss StoreView</title>" in page
         assert list(headers.keys()) == [
@@ -80,7 +80,7 @@ def test_danfoss(workdir):
         insecure = ssl.create_default_context()
         insecure.check_hostname, insecure.verify_mode = False, ssl.CERT_NONE
         status, _, page = http("/", base=f"https://127.0.0.1:{HTTPS_PORT}", context=insecure)
-        assert status == 200 and "SM800A" in page
+        assert status == 200 and "System Manager 800A" in page
         with socket.create_connection(("127.0.0.1", HTTPS_PORT)) as s:  # not TLS
             s.sendall(b"GET / HTTP/1.0\r\n\r\n")
             try:
@@ -210,6 +210,9 @@ def test_danfoss_index_file(workdir):
     with open(index, "wb") as f:
         f.write(page)
     os.utime(index, (0x688B26F2, 0x688B26F2))
+    os.makedirs(os.path.join(workdir, "assets", "images"), exist_ok=True)
+    with open(os.path.join(workdir, "assets", "images", "Danfoss-logo.png"), "wb") as f:
+        f.write(b"\x89PNG stand-in")
     proc, log_path = start("danfoss", workdir, INDEX_FILE=index)
     try:
         status, headers, body = http("/")
@@ -217,12 +220,14 @@ def test_danfoss_index_file(workdir):
         assert headers["ETag"] == f'"688b26f2-{len(page):x}"'
         assert headers["Last-Modified"] == "Thu, 31 Jul 2025 08:18:58 GMT"
         status, headers, js = http("/main.ccc.js")
-        assert status == 200 and "Danfoss System Manager - SM800A" in js
+        assert status == 200 and "System Manager 800A" in js
         assert headers["ETag"].startswith('"688b26f2-')
         assert http("/runtime.bbb.js")[:3:2] == (200, "")
         status, headers, css = http("/styles.aaa.css")
         assert status == 200 and headers["Content-Type"] == "text/css"
         assert http("/main.zzz.js")[0] == 404
+        with urllib.request.urlopen(f"http://127.0.0.1:{HTTP_PORT}/assets/images/Danfoss-logo.png") as r:
+            assert r.headers["Content-Type"] == "image/png" and r.read() == b"\x89PNG stand-in"
     finally:
         proc.terminate()
         proc.wait(timeout=5)

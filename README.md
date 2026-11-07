@@ -23,7 +23,7 @@ The Dixell persona follows real XWEB EVO units the same way: no `Server` header,
 
 Real units of both vendors serve their own favicon, and scanners match devices by its hash. That icon is the vendor's artwork, so it is not in this repository. For a private deployment you can point `FAVICON_FILE` at a copy you have the right to use.
 
-The same goes for the Danfoss start page. Real units serve a short Angular loader page from the firmware, and thousands share its exact hash. Point `INDEX_FILE` at that `index.html` (from the public firmware package) and the decoy serves it byte for byte, with its original date in `Last-Modified` and `ETag`. The loader's `main.*.js` then shows the decoy's own login page.
+The same goes for the Danfoss start page. Real units serve a short Angular loader page from the firmware, and thousands share its exact hash. Point `INDEX_FILE` at that `index.html` (from the public firmware package) and the decoy serves it byte for byte, with its original date in `Last-Modified` and `ETag`. The loader's `main.*.js` then shows the decoy's own login page, laid out like the firmware's remote login. If the firmware's `assets/images/Danfoss-logo.png` sits beside that `index.html`, the page uses it.
 
 Both personas can also run an optional **Modbus TCP** service with fake case temperatures, setpoints and a defrost register. Real AK-SM 800A units only use Modbus to talk to their own case controllers, so Modbus is off by default. Turn it on to catch generic industrial scanners.
 
