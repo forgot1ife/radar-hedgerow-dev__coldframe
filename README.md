@@ -1,7 +1,5 @@
 # coldframe
 
-<a href="https://news.ycombinator.com/item?id=50406292"><img src="https://hackergit.org/badge/hedgerow-dev/coldframe.svg?style=rank&rank=day" alt="Hacker News" width="250" height="55"></a>
-
 A honeypot for supermarket refrigeration controllers.
 
 In 2026, attackers broke into internet-facing refrigeration supervisors across Europe using default passwords and old, unpatched firmware, then forced defrost cycles. coldframe pretends to be one of those controllers. It records who connects, what passwords they try and which public exploits they use, and it never gives them anything real.
