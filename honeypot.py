@@ -64,7 +64,7 @@ PERSONAS = {
         "server": "nginx",
         "vendor": "Danfoss",
         "product": "AK-SM 880A",
-        "firmware": "SVB501.000.139",  # pre-R4.3.1, still has the code-of-the-day path
+        "firmware": "SVB501.0.168",  # SVB5.ver in firmware 4.3.1, same as the login page
         "not_found": "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n"
                      "<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n"
                      "</body>\r\n</html>\r\n",
@@ -283,6 +283,12 @@ if INDEX_FILE:
         with open(logo, "rb") as f:
             BUNDLES["/assets/images/Danfoss-logo.png"] = (f.read(1 << 20), "image/png")
 
+# Real units serve this without a login; the StoreView client reads it first.
+# Same content, line endings and mtime as html/metadata.json in firmware 4.3.1.
+METADATA = (b'{\r\n  "File_version": "1.0",\r\n  "Installation_version": "4.3.1",\r\n  "build_number": "",\r\n'
+            b'  "mode": {\r\n    "security": "enforcing",\r\n    "SecurityPopUpShown": "True"\r\n  }\r\n}')
+METADATA_MTIME = 0x688B27D9  # Thu, 31 Jul 2025 08:22:49 GMT
+
 NOT_ALLOWED = ("<html>\r\n<head><title>405 Not Allowed</title></head>\r\n<body>\r\n"
                "<center><h1>405 Not Allowed</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n")
 
@@ -364,8 +370,9 @@ def danfoss_xml(src, proto, body, headers):
     user, password = attrs.get("user", ""), attrs.get("password", attrs.get("pass", ""))
     if action == "getauth" or "user" in attrs or "pass" in attrs:
         if "eds_only" in attrs or "quantum_only" in attrs:
-            granted = password in valid_codes()
-            exploit = "CVE-2025-41450 code-of-the-day bypass" + (", correct code" if granted else "")
+            # Firmware 4.3.1 is patched (fixed in R4.2), so the code never logs in.
+            correct = password in valid_codes()
+            exploit = "CVE-2025-41450 code-of-the-day bypass" + (", correct code" if correct else "")
         else:
             granted = (user.lower(), password) in WEAK_LOGINS
     authed = authed or granted  # user=/pass= on any command is the pre-4.0 auth style
@@ -636,6 +643,8 @@ class DecoyHTTP(BaseHTTPRequestHandler):
                 return self.reply(200, data, ctype, static=True, mtime=INDEX_MTIME)
             if path == "/favicon.ico" and FAVICON:
                 return self.reply(200, FAVICON, "image/x-icon", static=True, mtime=FAVICON_MTIME)
+            if path == "/metadata.json":
+                return self.reply(200, METADATA, "application/json", static=True, mtime=METADATA_MTIME)
             return self.reply(404, P["not_found"])
 
         if path in ("/favicon.ico", "/img/icons/icon16.ico") and FAVICON:

@@ -64,6 +64,9 @@ def test_danfoss(workdir):
         assert status == 200 and "System Manager 800A" in page
         assert headers["ETag"].startswith('"6a198bb7-') and headers["Connection"] == "keep-alive"
         assert headers["Server"] == "nginx" and "<title>Danfoss StoreView</title>" in page
+        status, headers, meta = http("/metadata.json")
+        assert status == 200 and json.loads(meta)["Installation_version"] == "4.3.1"
+        assert headers["Content-Type"] == "application/json" and headers["ETag"] == '"688b27d9-ab"'
         assert list(headers.keys()) == [
             "Server", "Date", "Content-Type", "Content-Length", "Last-Modified", "Connection", "ETag",
             "Access-Control-Allow-Origin", "Strict-Transport-Security", "Access-Control-Allow-Methods",
@@ -95,7 +98,11 @@ def test_danfoss(workdir):
         token = xml.split("<session_token>")[1].split("<")[0]
         authed = lambda body: urllib.request.urlopen(urllib.request.Request(
             f"http://127.0.0.1:{HTTP_PORT}/html/xml.cgi", data=body, headers={"AKSM-Auth": token})).read().decode()
-        assert "<store_name>" in authed(b'<cmd action="read_units"/>')
+        units = authed(b'<cmd action="read_units"/>')
+        assert "<store_name>" in units
+        # One firmware version everywhere: the login page and the API agree.
+        assert "<software>SVB501.0.168</software>" in units
+        assert "SVB501.0.168" in http("/")[2]
         assert "<store_name>" in http("/xml.cgi", b'<cmd action="read_units" user="admin" pass="admin"/>')[2]
         assert authed(b'<cmd action="read_devices"/>').count("<device ") == 8
         authed(b'<cmd action="start_defrost" node="2"/>')
@@ -107,7 +114,7 @@ def test_danfoss(workdir):
         from datetime import datetime, timezone
         good = code_of_the_day(datetime.now(timezone.utc).date())
         _, _, xml = http("/xml.cgi", f'<cmd user="" password="{good}" action="getauth" eds_only="1"></cmd>'.encode())
-        assert "<session_token>" in xml
+        assert "<session_token>" not in xml  # 4.3.1 is patched; the attempt is still logged
         http("/xml.cgi", b'<cmd user="" password="00000" action="getauth" eds_only="1"></cmd>')
         http("/html/xml.cgi", b'<cmd action="getauth" user="\x1b[2Jx" password="p"/>')
         http("/" + "%ff" * 3000, "\xff".encode("latin-1") * 8000)
@@ -136,7 +143,7 @@ def test_danfoss(workdir):
                                   "--ignore", "10.9.9.9", "--hours", "1"],
                                  stdin=open(log_path), capture_output=True, text=True, check=True).stdout
         assert "CVE-2023-25914 path traversal" in summary and "last 1h" in summary
-        assert "(accepted: 3)" in summary and "DEFROST" in summary
+        assert "(accepted: 2)" in summary and "DEFROST" in summary
         assert "\x1b" not in summary
         with open(log_path, "rb") as f:
             assert max(len(line) for line in f) <= 9000

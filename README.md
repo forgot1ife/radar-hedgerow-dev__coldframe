@@ -17,7 +17,9 @@ It is one Python file with no dependencies outside the standard library.
 
 The Danfoss persona copies what internet scanners record for real AK-SM 800A units: the `nginx` server header and header order, the `Danfoss StoreView` page title, TLS 1.2 only, and a 1-year certificate for `CN=DanfossSM800A` issued by a `SelfSigned-DanfossSM800A` authority. Each build generates its own keys.
 
-Weak logins (for example `Supervisor` / `12345`) and a correct CVE-2025-41450 "code of the day" **succeed**. The attacker gets a session token and a dashboard of fake refrigerated cases with defrost buttons. Every action they take is logged as a `control` event; nothing is real.
+It reports firmware 4.3.1 everywhere: the login page, `read_units` and an unauthenticated `/metadata.json`, as real units do. Because 4.3.1 is patched, a CVE-2025-41450 "code of the day" is logged (with whether it was correct) but does not log in.
+
+Weak logins (for example `Supervisor` / `12345`) **succeed**. The attacker gets a session token and a dashboard of fake refrigerated cases with defrost buttons. Every action they take is logged as a `control` event; nothing is real.
 
 The Dixell persona follows real XWEB EVO units the same way: no `Server` header, their security-header set and order, the same asset paths and page size. Its login uses the real `/cgi-bin/login.lua` flow: the documented factory login `Admin` / `Admin` succeeds, five failures in five minutes lock the user, and attempts at the XWEB Pro `auth_mode` bypass (CVE-2026-25085) are tagged.
 
