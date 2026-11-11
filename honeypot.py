@@ -322,7 +322,10 @@ def danfoss_exploit_tag(action, attrs):
 # Logins that "work", so we can watch what attackers do next. Supervisor/12345
 # is reported as an AK-SM factory default; the others are common guesses.
 WEAK_LOGINS = {("supervisor", "12345"), ("superviseur", "12345"), ("admin", "admin"), ("admin", "1234")}
-STORE_NAME = "Fresh Market 0412"
+# Per-unit strings that differ on every real device. Set them differently on each
+# deployment, or every copy of this decoy shows the same store name and MAC address.
+STORE_NAME = os.environ.get("STORE_NAME", "Fresh Market 0412")
+MAC_ADDRESS = os.environ.get("MAC_ADDRESS") or ("00:0a:5c:3e:91:4d" if PERSONA == "danfoss" else "00:1a:22:6b:0e:41")
 SESSION_TTL = 3600
 _sessions = {}  # token -> expiry (monotonic)
 _sessions_lock = threading.Lock()
@@ -400,8 +403,8 @@ def danfoss_xml(src, proto, body, headers):
         return head + f'<resp action="{act}" error="15"/>'
 
     if action == "read_units":
-        return head + (f'<resp action="read_units" error="0"><store_name>{STORE_NAME}</store_name>'
-                       f'<software>{P["firmware"]}</software><macaddr>00:0a:5c:3e:91:4d</macaddr>'
+        return head + (f'<resp action="read_units" error="0"><store_name>{escape(STORE_NAME)}</store_name>'
+                       f'<software>{P["firmware"]}</software><macaddr>{escape(MAC_ADDRESS)}</macaddr>'
                        '<port>80</port></resp>')
     if action == "read_devices":
         rows = "".join(f'<device node="{n + 1}" name="{CASE_NAMES[n]}" temp="{t / 10:.1f}" '
@@ -442,7 +445,7 @@ DIXELL_LOGIN = """<!DOCTYPE html>
 <select id="login-mode"><option value="standard">standard</option><option value="ldap">ldap</option></select>
 <select id="login-language"><option>English</option><option>Italiano</option><option>Deutsch</option><option>Fran&ccedil;ais</option><option>Espa&ntilde;ol</option></select>
 <button id="login-button" type="submit">Login</button><div id="login-error"></div></form>
-<div id="login-date"></div><div id="login-macaddress">MAC 00:1a:22:6b:0e:41</div></div>
+<div id="login-date"></div><div id="login-macaddress">MAC {mac}</div></div>
 {scripts}
 <script>
 document.getElementById('login-date').textContent=new Date().toLocaleString();
@@ -467,6 +470,7 @@ DIXELL_ASSETS = {f"/js/{name}": "application/javascript" for name in DIXELL_SCRI
 DIXELL_ASSETS.update({f"/css/{name}": "text/css" for name in ("icons.css", "style.min.css", "fullcalendar.css")})
 DIXELL_ASSETS["/img/xweb-logo.png"] = "image/png"  # scanners fingerprint XWEB EVO by this path
 DIXELL_LOGIN = DIXELL_LOGIN.replace("{scripts}", "".join(f'<script src="js/{n}"></script>' for n in DIXELL_SCRIPTS))
+DIXELL_LOGIN = DIXELL_LOGIN.replace("{mac}", escape(MAC_ADDRESS))
 DIXELL_LOGIN += "\n" * (8202 - len(DIXELL_LOGIN.encode()))  # real pages are 8202 bytes
 
 # Header set and order seen on most real XWEB EVO units; note no Server header.

@@ -108,6 +108,8 @@ On the host, only expose the ports the persona would really have, and block outb
 | `LOG_PATH` | `events.jsonl` | Where events are appended |
 | `FAVICON_FILE` | none | Optional favicon to serve (private deployments only) |
 | `INDEX_FILE` | none | Optional Danfoss firmware `index.html` to serve as the start page (private deployments only) |
+| `STORE_NAME` | `Fresh Market 0412` | Store name in the Danfoss `read_units` reply. Set a different one on every deployment |
+| `MAC_ADDRESS` | per persona | MAC address in the Danfoss `read_units` reply and on the XWEB login page. Set a different one on every deployment |
 
 ## Reading the log
 
@@ -146,7 +148,7 @@ python3 -I summary.py --hours 24 --ignore <your-own-ip> < events.jsonl
 ## Limitations
 
 - **Shallow interaction.** Logged-in attackers see a small dashboard and a handful of XML commands, not the full StoreView app.
-- **Public code can be fingerprinted.** Anyone can read this repository and spot its exact responses. Change the persona strings, page layout and certificate subject for your deployment.
+- **Public code can be fingerprinted.** Anyone can read this repository and spot its exact responses. Set `STORE_NAME` and `MAC_ADDRESS` differently on every deployment (the cloud-init file does this for you), since real units each have their own. The certificate names and the rest of the page are shared by real units of that model, so they stay the same; changing them would make the decoy easier to spot, not harder. Page layout beyond these strings is in the source.
 - **Unconfirmed details.** Static paths, the full web app and some XML response shapes of real units are not public. Where they were missing, coldframe uses plausible values.
 - **Cloud IPs look suspicious.** Some scanners flag industrial devices on cloud hosting as likely honeypots.
 

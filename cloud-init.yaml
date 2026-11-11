@@ -24,9 +24,13 @@ runcmd:
     - -c
     - |
       . /etc/coldframe.env
-      if [ "$PERSONA" = danfoss ]; then ports="-p 80:8080 -p 443:8443"; https=8443; else ports="-p 80:8080"; https=0; fi
+      # Real units each have their own store name and MAC, so give this one its own.
+      STORE_NAME="Fresh Market $(shuf -i 1000-9999 -n1)"
+      if [ "$PERSONA" = danfoss ]; then oui=00:0a:5c; ports="-p 80:8080 -p 443:8443"; https=8443; else oui=00:1a:22; ports="-p 80:8080"; https=0; fi
+      MAC_ADDRESS=$(printf "$oui:%02x:%02x:%02x" $(shuf -i 0-255 -n3))
       podman run -d --name coldframe --restart=always \
         --read-only --cap-drop=ALL --security-opt no-new-privileges --userns=auto \
         --memory 128m --pids-limit 512 --log-opt max-size=10m \
-        $ports -v coldframe-logs:/logs:U -e PERSONA="$PERSONA" -e HTTPS_PORT=$https coldframe
+        $ports -v coldframe-logs:/logs:U -e PERSONA="$PERSONA" -e HTTPS_PORT=$https \
+        -e STORE_NAME="$STORE_NAME" -e MAC_ADDRESS="$MAC_ADDRESS" coldframe
   - systemctl enable --now podman-restart.service

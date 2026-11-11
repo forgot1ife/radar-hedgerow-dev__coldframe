@@ -240,9 +240,30 @@ def test_danfoss_index_file(workdir):
         proc.wait(timeout=5)
 
 
+def test_unit_strings(workdir):
+    # Store name and MAC address are per-unit strings, so each deployment sets its own.
+    proc, _ = start("danfoss", workdir, STORE_NAME="Konijn & Zonen 7731", MAC_ADDRESS="00:0a:5c:11:22:33")
+    try:
+        units = http("/xml.cgi", b'<cmd action="read_units" user="admin" pass="admin"/>')[2]
+        assert "<store_name>Konijn &amp; Zonen 7731</store_name>" in units
+        assert "<macaddr>00:0a:5c:11:22:33</macaddr>" in units and "3e:91:4d" not in units
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    proc, _ = start("dixell", workdir, MAC_ADDRESS="00:1a:22:aa:bb:cc")
+    try:
+        page = http("/")[2]
+        assert "MAC 00:1a:22:aa:bb:cc</div>" in page and "00:1a:22:6b:0e:41" not in page
+        assert len(page.encode()) == 8202
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     workdir = tempfile.mkdtemp()
     test_danfoss(workdir)
     test_danfoss_index_file(workdir)
     test_dixell(workdir)
+    test_unit_strings(workdir)
     print("OK: both personas")
