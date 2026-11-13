@@ -334,6 +334,35 @@ def test_pcoweb(workdir):
             assert raw_http(f"GET /config/{page} HTTP/1.1\r\nHost: x\r\n\r\n".encode())[0] == "HTTP/1.1 401 Unauthorized"
             line, _, h, body = raw_http(f"GET /config/{page} HTTP/1.1\r\nHost: x\r\n".encode() + auth + b"\r\n")
             assert line == "HTTP/1.0 200 OK" and b"<title>" + title + b"</title>" in body, page
+        # Menu links and the stylesheet answer too (behind the same password).
+        get = lambda path: raw_http(f"GET {path} HTTP/1.1\r\nHost: x\r\n".encode() + auth + b"\r\n")
+        for path, text in [("/config/adjustattrib.cgi", b"Attributes"), ("/config/stopservices.cgi", b"Services stopped"),
+                           ("/config/clearflashdisk.cgi", b"Operation completed"),
+                           ("/config/pw_view_network.cgi", b"HWaddr 00:0A:5C:1F:EA:00"),
+                           ("/config/result.html?%3fscript%3arccmd%28%27do_flashroom%27%29", b"Filesystem"),
+                           ("/config/result.html?%3fscript%3arccmd%28%27factdefcfg%27%29", b"IP address")]:
+            line, _, h, body = get(path)
+            assert line == "HTTP/1.0 200 OK" and text in body, path
+        line, _, h, body = get("/config/style.css")
+        assert line == "HTTP/1.0 200 OK" and b"font-family" in body
+        # The pages carry the card's real form fields.
+        for page, texts in [("pw_network.html", [b"IP Address Main", b"Gateway Address", b"Primary DNS"]),
+                            ("pw_pcocom.html", [b"Baud rate", b"Modbus Extended"]),
+                            ("pw_modbustcp.html", [b"Modbus TCP port", b"Map mode"]),
+                            ("pw_snmp.html", [b"Read/Write community", b"System contact"]),
+                            ("pw_bacnet.html", [b"pCOWeb Device Instance", b"APDU timeout"]),
+                            ("pw_users.html", [b"System Administrator", b"httpadmin", b"carel", b"guest"]),
+                            ("pw_firmware.html", [b"flash_apps_Axxx.bin", b"flash_sys_Byyy.bin"]),
+                            ("pw_inet_ports.html", [b"Telnet", b"FTP"])]:
+            body = get(f"/config/{page}")[3]
+            assert b"<form" in body and b'method="POST"' in body and all(x in body for x in texts), page
+        # Saving a form answers like the card and is logged with what was sent.
+        post = b"?script:setdb('ifcfg','ip00')=10.9.8.7"
+        head = b"POST /config/pw_network.html HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n" % len(post)
+        assert raw_http(head + b"\r\n" + post)[0] == "HTTP/1.1 401 Unauthorized"
+        line, _, h, body = raw_http(head + auth + b"\r\n" + post)
+        assert line == "HTTP/1.0 200 OK" and b"Network configuration has been saved on device." in body
+        assert any(e["event"] == "request" and e["method"] == "POST" and "10.9.8.7" in e["body"] for e in events(log_path))
         # Pictures sit behind the same password as the page.
         assert raw_http(b"GET /http/index_img/pw_logo.jpg HTTP/1.1\r\nHost: x\r\n\r\n")[0] == "HTTP/1.1 401 Unauthorized"
         line, _, h, body = raw_http(b"GET /http/index_img/pw_logo.jpg HTTP/1.1\r\nHost: x\r\n" + basic("admin", "fadmin") + b"\r\n")

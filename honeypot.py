@@ -665,29 +665,142 @@ PCO_CONFIG_PAGES = {"adminpage.html": "pCOWeb Configuration", "pw_network.html":
                     "pw_snmp.html": "SNMP Configuration", "pw_bacnet.html": "BACnet Configuration",
                     "scanplugins.cgi": "Plugin Configuration", "pw_users.html": "Change User Passwords",
                     "pw_firmware.html": "Firmware Upgrade", "pw_inet_ports.html": "Configure Internet services"}
-PCO_MENUS = [("System Information", [("View used/free disk space", "result.html"),
-                                     ("View factory bootswitch parameters", "result.html"),
+PCO_MENUS = [("System Information", [("View used/free disk space", "result.html?%3fscript%3arccmd%28%27do_flashroom%27%29"),
+                                     ("View factory bootswitch parameters", "result.html?%3fscript%3arccmd%28%27factdefcfg%27%29"),
                                      ("View network configuration", "pw_view_network.cgi")]),
              ("System Utilities", [("Fix permissions of HTML pages and CGI scripts", "adjustattrib.cgi"),
                                    ("Stop services and free memory", "stopservices.cgi"),
                                    ("Delete user files and settings", "clearflashdisk.cgi")]),
              ("Internet services", [("Configure Internet services", "pw_inet_ports.html")])]
 
+# Form fields as (label, "database.key", value): a tuple of options is a list box whose first
+# option is selected, None is a password box. Labels and field names are the card's own;
+# the values are plausible defaults.
+PCO_FORMS = {
+    "pw_network.html": [
+        ("Ip Addresses and Subnet Masks", [("IP Address Main", "ifcfg.ip00", PCO_IP), ("Netmask Main", "ifcfg.mask00", "255.255.255.0"),
+            ("IP Alias 1", "ifcfg.ip01", ""), ("Netmask 1", "ifcfg.mask01", ""), ("IP Alias 2", "ifcfg.ip02", ""),
+            ("Netmask 2", "ifcfg.mask02", ""), ("IP Alias 3", "ifcfg.ip03", ""), ("Netmask 3", "ifcfg.mask03", "")]),
+        ("Gateway", [("Gateway Address", "ifcfg.gateway", "192.168.1.1")]),
+        ("DNS servers", [("Primary DNS", "ifcfg.dns1", "192.168.1.1"), ("Secondary DNS", "ifcfg.dns2", "")])],
+    "pw_pcocom.html": [
+        ("Serial communication", [("Protocol", "pcocfg.protocol", ("Carel", "Modbus", "Modbus Extended")),
+            ("Baud rate", "pcocfg.baud", ("19200", "300", "600", "1200", "2400", "4800", "9600", "38400", "57600", "115200")),
+            ("Supervisory variables", "pcocfg.nvars", "207")])],
+    "pw_modbustcp.html": [
+        ("Service Configuration", [("Modbus TCP status", "tcpmodbus.tcpmodbus_enable", ("Enabled", "Disabled"))]),
+        ("System Configuration", [("Modbus TCP port", "tcpmodbus.tcpport", "502"),
+            ("Map mode", "tcpmodbus.mapmode", ("v1.5.x (new)", "v1.4.x (compatible)"))])],
+    "pw_snmp.html": [
+        ("Service configuration", [("SNMP status", "snmpcfg.snmp_enable", ("Enabled", "Disabled"))]),
+        ("System Configuration", [("Read/Write community", "snmpcfg.rwcommunity", "private"), ("Read/Write network", "snmpcfg.rwnetwork", "default"),
+            ("Read only community", "snmpcfg.rocommunity", "public"), ("Read only network", "snmpcfg.ronetwork", "default"),
+            ("System name", "snmpcfg.sysname", "pCOWeb"), ("System description", "snmpcfg.sysdescr", "Carel pCOWeb"),
+            ("System location", "snmpcfg.syslocation", ""), ("System contact", "snmpcfg.syscontact", "")])],
+    "pw_bacnet.html": [
+        ("Service configuration", [("BACnet status", "cbgcfg.bacnet_enable", ("Enabled", "Disabled"))]),
+        ("Device Properties", [("BACnet LAN type", "cbgcfg.lantype", ("BACnet/IP", "BACnet Ethernet")),
+            ("BACnet/IP UDP port", "cbgcfg.bipudp", "BAC0"), ("pCOWeb Device Instance", "cbgcfg.ourinstance", "1"),
+            ("Description", "cbgcfg.ourdescription", ""), ("Location", "cbgcfg.ourlocation", ""),
+            ("APDU timeout", "cbgcfg.apduto", "3000"), ("APDU retries", "cbgcfg.apduretries", "3"),
+            ("Password for restart", "cbgcfg.password", None)]),
+        ("Clock Parameters", [("Daylight Saving Time", "cbgcfg.dstflag", ("No", "Yes")), ("UTC offset", "cbgcfg.utcoffset", "0")]),
+        ("pCO Mapping Parameters", [("Mapped digital variables", "cbgcfg.mappeddigitals", "207"),
+            ("Mapped analog variables", "cbgcfg.mappedanalogs", "207"), ("Mapped integer variables", "cbgcfg.mappedintegers", "207")])],
+    "pw_users.html": [
+        ("Operating system user list", [("System Administrator (root)", "userspwd.PROOT", None), ("WEB Administrator (httpadmin)", "userspwd.PHTTP", None),
+            ("PLC User (carel)", "userspwd.PCAREL", None), ("Guest User (guest)", "userspwd.PGUEST", None)])],
+    "pw_inet_ports.html": [
+        ("Internet services access configuration", [("HTTP status", "ifcfg.http_enable", ("Enabled", "Disabled")),
+            ("HTTP port", "ifcfg.HTTP_PORT", "80"), ("FTP status", "ifcfg.ftp_enable", ("Enabled", "Disabled")),
+            ("FTP port", "ifcfg.FTP_PORT", "21"), ("Telnet status", "ifcfg.telnet_enable", ("Enabled", "Disabled")),
+            ("Telnet port", "ifcfg.TELNET_PORT", "23")])],
+}
+PCO_FIRMWARE = ('<p><b>!!BE CAREFUL!!</b> Any power supply interruption during upgrade may corrupt pCOWeb or pCO.</p>\r\n'
+                '<p>To fully upgrade pCOWeb firmware you need two files: flash_apps_Axxx.bin to upgrade applications, '
+                'and flash_sys_Byyy.bin to upgrade the base operating system.</p>\r\n'
+                '<form method="POST" action="pw_firmware.html" enctype="multipart/form-data">\r\n'
+                'pCOWeb firmware file <input type="file" name="image"> <input type="submit" value="Upgrade">\r\n</form>\r\n')
+PCO_CSS = b'body { font-family: Verdana, Arial, Helvetica, sans-serif; font-size: 14px; }\r\ntd { padding: 2px 8px; }\r\n'
 
-def pco_config_page(name):
+
+def pco_form(name):
+    out = f'<form method="POST" action="{name}">\r\n'
+    for section, fields in PCO_FORMS[name]:
+        out += f"<h4>{section}</h4>\r\n<table>\r\n"
+        for label, key, value in fields:
+            db, _, field = key.partition(".")
+            attr = f"?script:setdb('{db}','{field}')"
+            if isinstance(value, tuple):
+                control = f'<select name="{attr}">' + "".join(
+                    f"<option{' selected' if i == 0 else ''}>{o}</option>" for i, o in enumerate(value)) + "</select>"
+            else:
+                control = f'<input type="{"text" if value is not None else "password"}" name="{attr}" value="{escape(value or "")}">'
+            out += f"<tr><td>{label}</td><td>{control}</td></tr>\r\n"
+        out += "</table>\r\n"
+    return out + '<input type="submit" value="Submit">\r\n</form>\r\n'
+
+
+def pco_page(name, body):
+    title = PCO_CONFIG_PAGES[name]
     tabs = "".join(f'<td>{label}</td>' if page == name else f'<td><a href="{page}">{label}</a></td>'
                    for label, page in PCO_TABS)
-    title = PCO_CONFIG_PAGES[name]
-    body = f"<h3>{title}</h3>\r\n"
+    return (f'<html>\r\n<head>\r\n  <link rel="stylesheet" href="style.css" type="text/css">\r\n  <title>{title}</title>\r\n</head>\r\n'
+            f'<body>\r\n<table cellspacing="0" cellpadding="4" border="1"><tr>{tabs}</tr></table>\r\n<h3>{title}</h3>\r\n{body}'
+            '</body>\r\n</html>\r\n').encode("latin-1")
+
+
+def pco_config_page(name):
     if name == "adminpage.html":
         body = "".join(f'<h4>{menu}</h4>\r\n<ul>' + "".join(f'<li><a href="{url}">{text}</a></li>' for text, url in items)
                        + "</ul>\r\n" for menu, items in PCO_MENUS)
-    elif name == "pw_network.html":
-        body += f"<p>IP address {PCO_IP}<br>MAC address {MAC_ADDRESS}</p>\r\n"
-    return (f'<html>\r\n<head>\r\n  <title>{title}</title>\r\n</head>\r\n<body>\r\n'
-            f'<table cellspacing="0" cellpadding="4" border="1"><tr>{tabs}</tr></table>\r\n{body}'
-            '</body>\r\n</html>\r\n').encode("latin-1")
+    elif name == "pw_firmware.html":
+        body = PCO_FIRMWARE
+    elif name == "scanplugins.cgi":
+        body = "<p>No plugins installed.</p>\r\n"
+    else:
+        body = pco_form(name)
+    return pco_page(name, body)
 
+
+def pco_saved_page(name):
+    title = PCO_CONFIG_PAGES[name]
+    what = title[:-len(" Configuration")] + " configuration" if title.endswith(" Configuration") else "Your configuration"
+    return pco_page(name, f'<p>{what} has been saved on device.</p>\r\n<p>Please reboot pCOWeb to apply the new configuration.</p>\r\n'
+                          f'<p><a href="{name}">Back to the previous page</a></p>\r\n')
+
+
+def pco_df():
+    return ("Filesystem           1k-blocks      Used Available Use% Mounted on\r\n"
+            "/dev/mtdblock2            3008      3008         0 100% /usr/local\r\n"
+            "/dev/mtdblock3            1856       412      1444  22% /usr/local/root/flash\r\n"
+            "ramfs                     4096       188      3908   4% /var/run\r\n")
+
+
+def pco_view_network():
+    return ("eth0      Link encap:Ethernet  HWaddr " + MAC_ADDRESS.upper() + "\r\n"
+            f"          inet addr:{PCO_IP}  Bcast:{PCO_IP.rsplit('.', 1)[0]}.255  Mask:255.255.255.0\r\n"
+            "          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1\r\n")
+
+
+def pco_factory():
+    return ("Factory bootswitch parameters\r\nIP address: 172.16.0.1\r\nNetmask: 255.255.255.0\r\nGateway: 0.0.0.0\r\n"
+            "HTTP port: 80\r\nFTP port: 21\r\nTelnet port: 23\r\n")
+
+
+def pco_result(query):
+    return pco_df() if "do_flashroom" in query else pco_factory()
+
+
+# Pages the menu links lead to: (content type, function of the query string).
+PCO_OTHER = {
+    "adjustattrib.cgi": ("text/html", lambda q: "Attributes of HTML pages and CGI scripts have been fixed.\r\n"),
+    "stopservices.cgi": ("text/html", lambda q: "Services stopped. Memory freed.\r\n"),
+    "clearflashdisk.cgi": ("text/html", lambda q: "Operation completed.\r\n"),
+    "pw_view_network.cgi": ("text/html", lambda q: "<pre>" + pco_view_network() + "</pre>\r\n"),
+    "result.html": ("text/html", lambda q: "<pre>" + pco_result(q) + "</pre>\r\n"),
+    "style.css": ("text/css", lambda q: PCO_CSS.decode()),
+}
 
 
 # --- HTTP ---------------------------------------------------------------------
@@ -778,16 +891,22 @@ class DecoyHTTP(BaseHTTPRequestHandler):
         return granted
 
     def pcoweb(self, path):
-        if self.command not in ("GET", "HEAD"):
+        cfg = path[len("/config/"):] if path.startswith("/config/") else ""
+        saving = self.command == "POST" and cfg in PCO_CONFIG_PAGES  # a form on a configuration page
+        if self.command not in ("GET", "HEAD") and not saving:
             return self.pco_error(501, "Not Implemented",
                                   f"The requested method '{escape(self.command[:80], quote=False)}' is not implemented by this server.")
         if path == "/":
             return self.pco_send(200, "OK", pco_stub(), "text/html; charset=iso-8859-1", sized=True, mtime=PCO_STUB_MTIME)
         image = path[len("/http/index_img/"):] if path.startswith("/http/index_img/") else ""
+        ctype = "text/html"
         if path == "/http/index.html" or image in PCO_IMAGES:
             realm, page = "flash/http", None if image else pco_default_page
-        elif path.startswith("/config/") and path[len("/config/"):] in PCO_CONFIG_PAGES:
-            realm, page = "config", lambda: pco_config_page(path[len("/config/"):])
+        elif cfg in PCO_CONFIG_PAGES:
+            realm, page = "config", lambda: (pco_saved_page if saving else pco_config_page)(cfg)
+        elif cfg in PCO_OTHER:
+            ctype, make = PCO_OTHER[cfg]
+            realm, page = "config", lambda: make(urlsplit(self.path).query).encode("latin-1")
         else:
             return self.pco_error(404, "Not Found", f"The requested URL '{escape(path[:80], quote=False)}' was not found on this server.")
         try:
@@ -801,7 +920,7 @@ class DecoyHTTP(BaseHTTPRequestHandler):
             return self.pco_send(200, "OK", PCO_PIXEL, PCO_IMAGES[image], sized=True, mtime=PCO_STUB_MTIME)
         # Pages pass through the card's tag filter, which sends its own short header block.
         self.close_connection = True
-        self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-type: text/html\r\nCache-Control: no-cache\r\nExpires: -1\r\n\r\n"
+        self.wfile.write(f"HTTP/1.0 200 OK\r\nContent-type: {ctype}\r\nCache-Control: no-cache\r\nExpires: -1\r\n\r\n".encode()
                          + (b"" if self.command == "HEAD" else page()))
 
     def send_error(self, code, message=None, explain=None):
