@@ -20,6 +20,7 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HTTP_PORT, HTTPS_PORT, MODBUS_PORT = 18080, 18443, 15020
+FTP_PORT, TELNET_PORT = 12121, 12323
 
 
 def start(persona, workdir, **env):
@@ -393,6 +394,49 @@ def test_pcoweb(workdir):
         proc.wait(timeout=5)
 
 
+def test_pcoweb_ftp_telnet(workdir):
+    # Same MAC as above: the card's host name is pCOWeb plus the last three octets.
+    proc, log_path = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:c8:24:f9", FTP_PORT=FTP_PORT, TELNET_PORT=TELNET_PORT)
+    host = "pCOWebc824f9"
+    try:
+        def talk(sock, text, until):
+            sock.sendall(text)
+            data = b""
+            while until not in data:
+                chunk = sock.recv(4096)
+                assert chunk, data
+                data += chunk
+            return data
+
+        with socket.create_connection(("127.0.0.1", FTP_PORT), timeout=5) as s:
+            greeting = talk(s, b"", b"\r\n")
+            assert greeting == f"220 {host} FTP server (GNU inetutils 1.3.2) ready.\r\n".encode()
+            assert talk(s, b"PASS x\r\n", b"\r\n") == b"503 Login with USER first.\r\n"
+            assert talk(s, b"USER anonymous\r\n", b"\r\n") == b"530 User anonymous unknown.\r\n"
+            assert talk(s, b"FEAT\r\n", b"\r\n") == b"500 'FEAT': command not understood.\r\n"
+            assert talk(s, b"PWD\r\n", b"\r\n") == b"530 Please login with USER and PASS.\r\n"
+            help_text = talk(s, b"HELP\r\n", b"ftp-bugs@")
+            assert help_text.startswith(b"214- The following commands are recognized (* =>'s unimplemented).\n   USER    PORT")
+            assert help_text.count(b"\n") == 8 and b"\r" not in help_text.split(b"214 Direct")[0]
+            assert talk(s, b"USER httpadmin\r\n", b"\r\n") == b"331 Password required for httpadmin.\r\n"
+            assert talk(s, b"PASS fhttpadmin\r\n", b"\r\n") == b"530 Login incorrect.\r\n"
+            assert talk(s, b"QUIT\r\n", b"\r\n") == b"221 Goodbye.\r\n"
+
+        with socket.create_connection(("127.0.0.1", TELNET_PORT), timeout=5) as s:
+            data = talk(s, b"", b"login: ")
+            assert data.startswith(bytes([255, 251, 3, 255, 251, 5]))  # IAC WILL SGA, WILL STATUS ...
+            assert data.endswith(f"\r\nLinux 2.4.21-rmk1 ({host}) (ttya0)\r\n\r\n\r\n{host} login: ".encode())
+            assert b"Password: " in talk(s, b"root\r\n", b"Password: ")
+            data = talk(s, b"froot\r\n", f"{host} login: ".encode())
+            assert b"Login incorrect" in data
+        log = events(log_path)
+        logins = [(e["proto"], e["username"], e["password"], e["granted"]) for e in log if e["event"] == "login_attempt" and e["proto"] != "http"]
+        assert logins == [("ftp", "httpadmin", "fhttpadmin", False), ("telnet", "root", "froot", False)], logins
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     workdir = tempfile.mkdtemp()
     test_danfoss(workdir)
@@ -400,4 +444,5 @@ if __name__ == "__main__":
     test_dixell(workdir)
     test_unit_strings(workdir)
     test_pcoweb(workdir)
+    test_pcoweb_ftp_telnet(workdir)
     print("OK: all personas")

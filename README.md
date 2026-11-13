@@ -12,7 +12,7 @@ It is one Python file with no dependencies outside the standard library.
 |---|---|---|
 | `danfoss` | Danfoss AK-SM 800A system manager | StoreView login, a fake store dashboard, the XML API at `/html/xml.cgi` and `/xml.cgi`, HTTP and HTTPS |
 | `dixell` | Copeland/Dixell XWEB EVO supervisor | Login page and the XWEB 500 CGI paths targeted by public exploits |
-| `pcoweb` | Carel pCOWeb card (HTTP only so far) | Redirect stub, Basic-auth pages behind the documented factory logins, an admin area with the card's configuration tabs |
+| `pcoweb` | Carel pCOWeb card (HTTP, FTP and telnet so far) | Redirect stub, Basic-auth pages behind the documented factory logins, an admin area with the card's configuration tabs |
 
 ### Looking like a real unit
 
@@ -28,7 +28,7 @@ Real units of both vendors serve their own favicon, and scanners match devices b
 
 The same goes for the Danfoss start page. Real units serve a short Angular loader page from the firmware, and thousands share its exact hash. Point `INDEX_FILE` at that `index.html` (from the public firmware package) and the decoy serves it byte for byte, with its original date in `Last-Modified` and `ETag`. The loader's `main.*.js` then shows the decoy's own login page, laid out like the firmware's remote login. If the firmware's `assets/images/Danfoss-logo.png` sits beside that `index.html`, the page uses it.
 
-The pCOWeb persona (first-generation firmware) copies the header names and order of `thttpd 2.20c`, the 364 or 367 byte redirect page at `/`, the 401 on `/http/index.html` with realm `flash/http`, and the card's habit of showing a 1970 date on units without a clock. The factory logins `admin` / `fadmin` and `httpadmin` / `fhttpadmin` work. The admin area follows the card's configuration pages: the same tab row (General, Network, pCO Com, ModbusTCP, SNMP, BACnet, Plugins, Users, Firmware), page titles, menu texts and file names, taken from the public A1.5.4 firmware package. The markup is our own, since the real pages are Carel's. The tab pages carry the card's own form labels and field names, and saving a form is logged in full and answered with a "saved, please reboot" page, without changing anything. Still guesses: the admin realm `config`, the thttpd error texts, the default field values, the output behind the menu links and the plugins page. The card's logo and images are Carel's, so they are blank. It does not speak telnet, FTP, SNMP or BACnet yet.
+The pCOWeb persona (first-generation firmware) copies the header names and order of `thttpd 2.20c`, the 364 or 367 byte redirect page at `/`, the 401 on `/http/index.html` with realm `flash/http`, and the card's habit of showing a 1970 date on units without a clock. The factory logins `admin` / `fadmin` and `httpadmin` / `fhttpadmin` work. The admin area follows the card's configuration pages: the same tab row (General, Network, pCO Com, ModbusTCP, SNMP, BACnet, Plugins, Users, Firmware), page titles, menu texts and file names, taken from the public A1.5.4 firmware package. The markup is our own, since the real pages are Carel's. The tab pages carry the card's own form labels and field names, and saving a form is logged in full and answered with a "saved, please reboot" page, without changing anything. Still guesses: the admin realm `config`, the thttpd error texts, the default field values, the output behind the menu links and the plugins page. The card's logo and images are Carel's, so they are blank. FTP (21) and telnet (23) are optional services with the card's own greetings (`FTP_PORT`, `TELNET_PORT`; cloud-init turns them on). Every login there fails for now: each attempt is logged with its username and password, and nothing sits behind it. SNMP, BACnet and Modbus are not there yet.
 
 The Danfoss and Dixell personas can also run an optional **Modbus TCP** service with fake case temperatures, setpoints and a defrost register. Real AK-SM 800A units only use Modbus to talk to their own case controllers, so Modbus is off by default. Turn it on to catch generic industrial scanners.
 
@@ -106,6 +106,7 @@ On the host, only expose the ports the persona would really have, and block outb
 |---|---|---|
 | `PERSONA` | `danfoss` | `danfoss`, `dixell` or `pcoweb` |
 | `PCOWEB_CLOCK` | random | `1970` or `ntp`: whether the pCOWeb clock shows a 1970 date, as about a third of real cards do. Unset, it is chosen at random at start |
+| `FTP_PORT`, `TELNET_PORT` | `0` (off) | pcoweb only: FTP and telnet listeners |
 | `PCOWEB_IP` | `192.168.1.100` | LAN address shown on the pCOWeb home page |
 | `HTTP_PORT` | `8080` | HTTP listener |
 | `HTTPS_PORT` | `0` (off) | HTTPS listener, needs `CERT_FILE` and `KEY_FILE` |

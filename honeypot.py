@@ -41,6 +41,8 @@ PERSONA = os.environ.get("PERSONA", "danfoss")
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8080"))
 HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "0"))      # 0 = off
 MODBUS_PORT = int(os.environ.get("MODBUS_PORT", "0"))    # 0 = off
+FTP_PORT = int(os.environ.get("FTP_PORT", "0"))          # 0 = off (pcoweb only)
+TELNET_PORT = int(os.environ.get("TELNET_PORT", "0"))    # 0 = off (pcoweb only)
 CERT_FILE = os.environ.get("CERT_FILE", "cert.pem")
 KEY_FILE = os.environ.get("KEY_FILE", "key.pem")
 LOG_PATH = os.environ.get("LOG_PATH", "events.jsonl")
@@ -1174,6 +1176,135 @@ class DecoyModbus(socketserver.BaseRequestHandler):
             unwatch(self.request)
 
 
+# --- Carel pCOWeb: FTP and telnet (first-generation firmware) -------------------
+# Banners follow what Shodan records for real cards. Every login fails for now:
+# we log what is tried, and there is no session behind it.
+
+PCO_HOST = "pCOWeb" + MAC_ADDRESS.replace(":", "")[-6:].lower()
+PCO_FTP_HELP = (
+    "214- The following commands are recognized (* =>'s unimplemented).\n"
+    "   USER    PORT    STOR    MSAM*   RNTO    NLST    MKD     CDUP \n"
+    "   PASS    PASV    APPE    MRSQ*   ABOR    SITE    XMKD    XCUP \n"
+    "   ACCT*   TYPE    MLFL*   MRCP*   DELE    SYST    RMD     STOU \n"
+    "   SMNT*   STRU    MAIL*   ALLO    CWD     STAT    XRMD    SIZE \n"
+    "   REIN*   MODE    MSND*   REST    XCWD    HELP    PWD     MDTM \n"
+    "   QUIT    RETR    MSOM*   RNFR    LIST    NOOP    XPWD \n"
+    f"214 Direct comments to ftp-bugs@{PCO_HOST}.\r\n")
+PCO_FTP_COMMANDS = {w.rstrip("*") for line in PCO_FTP_HELP.split("\n")[1:7] for w in line.split()}
+# Option bytes a classic telnetd sends first: WILL SGA, STATUS, ECHO; DO TTYPE, TSPEED, XDISPLOC, NEW_ENVIRON, ECHO, NAWS, LFLOW.
+PCO_TELNET_OPTIONS = bytes([255, 251, 3, 255, 251, 5, 255, 251, 1, 255, 253, 24, 255, 253, 32,
+                            255, 253, 35, 255, 253, 39, 255, 253, 1, 255, 253, 31, 255, 253, 33])
+
+
+def read_line(sock, limit=256, telnet_echo=None, hide=False):
+    """Read up to a line end. With telnet_echo set, drop telnet option bytes and echo what is typed."""
+    line = b""
+    while True:
+        b = sock.recv(1)
+        if not b:
+            return None
+        c = b[0]
+        if telnet_echo and c == 255:  # IAC: skip option negotiation
+            n = sock.recv(1)
+            if n and n[0] in (251, 252, 253, 254):
+                sock.recv(1)
+            elif n and n[0] == 250:  # subnegotiation runs until IAC SE
+                prev = 0
+                while True:
+                    x = sock.recv(1)
+                    if not x or (prev == 255 and x[0] == 240):
+                        break
+                    prev = x[0]
+            continue
+        if c == (13 if telnet_echo else 10):  # telnet ends a line with CR (then LF or NUL), FTP with LF
+            return line.decode("latin-1")
+        if c in (0, 10, 13):
+            continue
+        if len(line) >= limit:
+            return None
+        line += b
+        if telnet_echo and not hide:
+            sock.sendall(b)
+
+
+class DecoyFTP(socketserver.BaseRequestHandler):
+    def handle(self):
+        watch(self.request)
+        sock, src = self.request, self.client_address
+        try:
+            sock.settimeout(SOCKET_TIMEOUT)
+            log("ftp", src, "connect")
+            sock.sendall(f"220 {PCO_HOST} FTP server (GNU inetutils 1.3.2) ready.\r\n".encode())
+            user, fails = "", 0
+            for _ in range(50):
+                line = read_line(sock)
+                if line is None:
+                    return
+                cmd, _, arg = line.strip().partition(" ")
+                cmd = cmd.upper()
+                if cmd == "PASS":
+                    if not user:
+                        reply = "503 Login with USER first."
+                    else:
+                        log("ftp", src, "login_attempt", username=user, password=arg, granted=False)
+                        time.sleep(random.uniform(0.6, 1.4))
+                        fails += 1
+                        reply = "530 Login incorrect."
+                        user = ""
+                else:
+                    if cmd != "USER":
+                        log("ftp", src, "command", cmd=cmd, arg=arg)
+                    if cmd == "USER":
+                        user = arg
+                        reply = (f"530 User {arg} unknown." if arg.lower() in ("anonymous", "ftp")
+                                 else f"331 Password required for {arg}.")
+                    elif cmd == "QUIT":
+                        sock.sendall(b"221 Goodbye.\r\n")
+                        return
+                    elif cmd == "HELP":
+                        reply = PCO_FTP_HELP.rstrip("\r\n")
+                    elif cmd == "NOOP":
+                        reply = "200 NOOP command successful."
+                    elif cmd in PCO_FTP_COMMANDS:
+                        reply = "530 Please login with USER and PASS."
+                    else:
+                        reply = f"500 '{cmd}': command not understood."
+                sock.sendall(reply.encode("latin-1", "replace") + b"\r\n")
+                if fails >= 5:  # a guess: how many tries before the card hangs up
+                    sock.sendall(b"421 Service not available, remote server has closed connection\r\n")
+                    return
+        except (socket.timeout, ConnectionError, OSError):
+            pass
+        finally:
+            unwatch(self.request)
+
+
+class DecoyTelnet(socketserver.BaseRequestHandler):
+    def handle(self):
+        watch(self.request)
+        sock, src = self.request, self.client_address
+        tty = "ttya0" if int(MAC_ADDRESS[-2:], 16) % 2 else "ttya1"
+        try:
+            sock.settimeout(SOCKET_TIMEOUT)
+            log("telnet", src, "connect")
+            sock.sendall(PCO_TELNET_OPTIONS + f"\r\nLinux 2.4.21-rmk1 ({PCO_HOST}) ({tty})\r\n\r\n\r\n{PCO_HOST} login: ".encode())
+            for _ in range(3):
+                user = read_line(sock, 64, telnet_echo=True)
+                if user is None:
+                    return
+                sock.sendall(b"\r\nPassword: ")
+                password = read_line(sock, 64, telnet_echo=True, hide=True)
+                if password is None:
+                    return
+                log("telnet", src, "login_attempt", username=user, password=password, granted=False)
+                time.sleep(random.uniform(0.6, 1.4))
+                sock.sendall(f"\r\nLogin incorrect\r\n{PCO_HOST} login: ".encode())
+        except (socket.timeout, ConnectionError, OSError):
+            pass
+        finally:
+            unwatch(self.request)
+
+
 class ThreadingTCP(Guarded, socketserver.ThreadingTCPServer):
     allow_reuse_address = True
 
@@ -1188,8 +1319,13 @@ def main():
         servers.append(TLSHTTPServer(("0.0.0.0", HTTPS_PORT), DecoyHTTP, context))
     if MODBUS_PORT:
         servers.append(ThreadingTCP(("0.0.0.0", MODBUS_PORT), DecoyModbus))
+    if PERSONA == "pcoweb" and FTP_PORT:
+        servers.append(ThreadingTCP(("0.0.0.0", FTP_PORT), DecoyFTP))
+    if PERSONA == "pcoweb" and TELNET_PORT:
+        servers.append(ThreadingTCP(("0.0.0.0", TELNET_PORT), DecoyTelnet))
     log("system", ("0.0.0.0", 0), "start",
-        http_port=HTTP_PORT, https_port=HTTPS_PORT, modbus_port=MODBUS_PORT)
+        http_port=HTTP_PORT, https_port=HTTPS_PORT, modbus_port=MODBUS_PORT,
+        ftp_port=FTP_PORT, telnet_port=TELNET_PORT)
     threading.Thread(target=reaper, daemon=True).start()
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()
