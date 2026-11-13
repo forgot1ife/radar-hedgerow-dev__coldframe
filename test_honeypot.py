@@ -260,10 +260,112 @@ def test_unit_strings(workdir):
         proc.wait(timeout=5)
 
 
+def raw_http(request, port=HTTP_PORT):
+    """Send raw bytes, return (status line, header names in order, header dict, body bytes)."""
+    with socket.create_connection(("127.0.0.1", port)) as s:
+        s.sendall(request)
+        data = b""
+        while chunk := s.recv(65536):
+            data += chunk
+    head, _, body = data.partition(b"\r\n\r\n")
+    lines = head.decode("latin-1").split("\r\n")
+    names = [line.split(":", 1)[0] for line in lines[1:]]
+    return lines[0], names, {n.lower(): line.split(":", 1)[1].strip()
+                             for n, line in zip(names, lines[1:])}, body
+
+
+def basic(user, password):
+    import base64
+    return b"Authorization: Basic " + base64.b64encode(f"{user}:{password}".encode()) + b"\r\n"
+
+
+def test_pcoweb(workdir):
+    # A real card's clock starts at 1970 (no RTC) on about a third of units; MAC ending 00 picks that.
+    proc, log_path = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:1f:ea:00")
+    try:
+        # GET / is a small redirect stub, not a 401; header names and order as on real cards.
+        line, names, h, body = raw_http(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert line == "HTTP/1.1 200 OK"
+        assert names == ["Server", "Content-type", "Date", "Last-modified", "Accept-Ranges",
+                         "Connection", "Content-length"]
+        assert h["server"] == "thttpd/2.20c 21nov01" and h["content-type"] == "text/html; charset=iso-8859-1"
+        assert h["content-length"] in ("364", "367") and int(h["content-length"]) == len(body)
+        assert b"This page will be redirected" in body and b"Carel pCOWeb Home Page" in body
+        assert h["date"].split()[3] == "1970" and h["last-modified"].split()[3] == "1970"
+        # HEAD sends the same headers and no body.
+        _, names, h2, body = raw_http(b"HEAD / HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert body == b"" and h2["content-length"] == h["content-length"]
+        # The page behind the redirect asks for a password: no Content-length, Basic realm flash/http.
+        line, names, h, body = raw_http(b"GET /http/index.html HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert line == "HTTP/1.1 401 Unauthorized"
+        assert names == ["Server", "Content-type", "Date", "Last-modified", "Accept-Ranges",
+                         "Connection", "WWW-Authenticate"]
+        assert h["www-authenticate"] == 'Basic realm="flash/http"' and h["last-modified"] == h["date"]
+        assert body.startswith(b"<HTML>\n<HEAD><TITLE>401 Unauthorized</TITLE>")
+        assert b"Authorization required for the URL '/http/index.html'." in body
+        assert body.endswith(b"thttpd/2.20c 21nov01</A></ADDRESS>\n</BODY>\n</HTML>\n") and len(body) == 316
+        # A wrong password gets the very same answer.
+        _, names2, h2, body2 = raw_http(b"GET /http/index.html HTTP/1.1\r\nHost: x\r\n" + basic("admin", "admin") + b"\r\n")
+        assert names2 == names and body2 == body
+        # The documented factory login opens the default page, sent as HTTP/1.0 by the tag filter.
+        line, names, h, page = raw_http(b"GET /http/index.html HTTP/1.1\r\nHost: x\r\n" + basic("admin", "fadmin") + b"\r\n")
+        assert line == "HTTP/1.0 200 OK"
+        assert names == ["Content-type", "Cache-Control", "Expires"] and h["expires"] == "-1"
+        assert b"pCOWeb Default Page" in page and b"00:0a:5c:1f:ea:00" in page
+        assert b"A1.5.4" in page and b"../config/adminpage.html" in page and len(page) == 3296
+        # The admin area is a second password area (thttpd uses the folder as the realm),
+        # laid out like the card's configuration pages: a tab row plus system menus.
+        line, _, h, body = raw_http(b"GET /config/adminpage.html HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert line == "HTTP/1.1 401 Unauthorized" and h["www-authenticate"] == 'Basic realm="config"'
+        auth = basic("httpadmin", "fhttpadmin")
+        line, _, h, body = raw_http(b"GET /config/adminpage.html HTTP/1.1\r\nHost: x\r\n" + auth + b"\r\n")
+        assert line == "HTTP/1.0 200 OK" and b"<title>pCOWeb Configuration</title>" in body
+        assert b"System Utilities" in body and b"Fix permissions of HTML pages and CGI scripts" in body
+        assert b'href="pw_firmware.html"' in body and b'href="scanplugins.cgi"' in body
+        # Each tab leads to its own page, behind the same password.
+        for page, title in [("pw_network.html", b"Network Configuration"), ("pw_pcocom.html", b"pCO Communication Configuration"),
+                            ("pw_modbustcp.html", b"Modbus TCP Configuration"), ("pw_snmp.html", b"SNMP Configuration"),
+                            ("pw_bacnet.html", b"BACnet Configuration"), ("scanplugins.cgi", b"Plugin Configuration"),
+                            ("pw_users.html", b"Change User Passwords"), ("pw_firmware.html", b"Firmware Upgrade"),
+                            ("pw_inet_ports.html", b"Configure Internet services")]:
+            assert raw_http(f"GET /config/{page} HTTP/1.1\r\nHost: x\r\n\r\n".encode())[0] == "HTTP/1.1 401 Unauthorized"
+            line, _, h, body = raw_http(f"GET /config/{page} HTTP/1.1\r\nHost: x\r\n".encode() + auth + b"\r\n")
+            assert line == "HTTP/1.0 200 OK" and b"<title>" + title + b"</title>" in body, page
+        # Pictures sit behind the same password as the page.
+        assert raw_http(b"GET /http/index_img/pw_logo.jpg HTTP/1.1\r\nHost: x\r\n\r\n")[0] == "HTTP/1.1 401 Unauthorized"
+        line, _, h, body = raw_http(b"GET /http/index_img/pw_logo.jpg HTTP/1.1\r\nHost: x\r\n" + basic("admin", "fadmin") + b"\r\n")
+        assert line == "HTTP/1.1 200 OK" and h["content-type"] == "image/jpeg" and body.startswith(b"GIF8")
+        # Unknown paths and unusual methods get thttpd's own pages.
+        line, _, h, body = raw_http(b"GET /nonexistent HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert line == "HTTP/1.1 404 Not Found" and len(body) == 318
+        assert b"The requested URL '/nonexistent' was not found on this server." in body
+        line, _, h, body = raw_http(b"OPTIONS / HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert line == "HTTP/1.1 501 Not Implemented" and len(body) == 333
+        assert b"The requested method 'OPTIONS' is not implemented by this server." in body
+        # Logins are logged with the password and whether it worked.
+        logins = [e for e in events(log_path) if e["event"] == "login_attempt"]
+        assert [(e["username"], e["password"], e["granted"]) for e in logins[:2]] == [
+            ("admin", "admin", False), ("admin", "fadmin", True)]
+        assert all(e["persona"] == "pcoweb" for e in logins)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+    # MAC ending 0xff picks a card whose clock was set by NTP, so dates are current.
+    proc, _ = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:aa:bb:ff")
+    try:
+        _, _, h, _ = raw_http(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert int(h["date"].split()[3]) >= 2026 and int(h["last-modified"].split()[3]) >= 2025
+        assert b"00:0a:5c:aa:bb:ff" in raw_http(b"GET /http/index.html HTTP/1.0\r\n" + basic("admin", "fadmin") + b"\r\n")[3]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 if __name__ == "__main__":
     workdir = tempfile.mkdtemp()
     test_danfoss(workdir)
     test_danfoss_index_file(workdir)
     test_dixell(workdir)
     test_unit_strings(workdir)
-    print("OK: both personas")
+    test_pcoweb(workdir)
+    print("OK: all personas")

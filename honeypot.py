@@ -5,6 +5,8 @@ Personas:
            the XML API at /html/xml.cgi, with known exploit attempts tagged.
   dixell   Copeland/Dixell XWEB 500 supervisor: login page and the CGI
            upload paths used by public exploits, tagged.
+  pcoweb   Carel pCOWeb card (HTTP only so far): thttpd 2.20c, a redirect
+           stub, Basic-auth pages with the factory logins.
 
 Optional Modbus TCP with fake case temperatures and setpoints; writes,
 including "defrost" commands, are logged. Off unless MODBUS_PORT is set.
@@ -15,6 +17,7 @@ Every event is one JSON line on stdout and appended to LOG_PATH.
     PERSONA=danfoss HTTP_PORT=8080 HTTPS_PORT=8443 python3 honeypot.py
 """
 
+import base64
 import json
 import os
 import random
@@ -75,6 +78,13 @@ PERSONAS = {
         "product": "XWEB EVO",
         "firmware": "1.8.2",
         "not_found": "<html><head><title>404 Not Found</title></head><body><h1>404 Not Found</h1></body></html>",
+    },
+    "pcoweb": {
+        "server": "thttpd/2.20c 21nov01",
+        "vendor": "Carel",
+        "product": "pCOWeb",
+        "firmware": "A1.5.4 - B1.2.4",
+        "not_found": "",  # thttpd pages are built by thttpd_page()
     },
 }
 P = PERSONAS[PERSONA]
@@ -325,7 +335,8 @@ WEAK_LOGINS = {("supervisor", "12345"), ("superviseur", "12345"), ("admin", "adm
 # Per-unit strings that differ on every real device. Set them differently on each
 # deployment, or every copy of this decoy shows the same store name and MAC address.
 STORE_NAME = os.environ.get("STORE_NAME", "Fresh Market 0412")
-MAC_ADDRESS = os.environ.get("MAC_ADDRESS") or ("00:0a:5c:3e:91:4d" if PERSONA == "danfoss" else "00:1a:22:6b:0e:41")
+MAC_ADDRESS = os.environ.get("MAC_ADDRESS") or {
+    "danfoss": "00:0a:5c:3e:91:4d", "pcoweb": "00:0a:5c:12:b4:7e"}.get(PERSONA, "00:1a:22:6b:0e:41")
 SESSION_TTL = 3600
 _sessions = {}  # token -> expiry (monotonic)
 _sessions_lock = threading.Lock()
@@ -547,6 +558,132 @@ DIXELL_EXPLOIT_PATHS = {
 }
 
 
+# --- Carel pCOWeb (first generation firmware, thttpd 2.20c) ---------------------
+# Headers, sizes and stub follow what Shodan records for real cards (Nov 2026).
+# Routes, page titles, menu texts and the redirect stub match the A1.5.4 firmware
+# package; its markup is Carel's, so the pages here are our own. Still guesses: the
+# admin realm "config" (thttpd uses the folder name, as in "flash/http") and the
+# bodies of thttpd's error pages.
+
+# Factory logins from the manual and RedTeam advisory RT-SA-2019-013.
+PCO_LOGINS = {("admin", "fadmin"), ("httpadmin", "fhttpadmin")}
+PCO_IP = os.environ.get("PCOWEB_IP", "192.168.1.100")  # the card's LAN address, shown on its home page
+PCO_IMAGES = {"pw_logo.jpg": "image/jpeg", "pw_background_logo.jpg": "image/jpeg",
+              "pw_logo_carel.gif": "image/gif", "pw_shadow.jpg": "image/jpeg", "pw_square.gif": "image/gif"}
+PCO_PIXEL = (b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,"
+             b"\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")
+PCO_PAGE_SIZE = 3296  # the card's default page is 3294 to 3298 bytes, by IP and firmware text
+
+if PERSONA == "pcoweb":
+    # A card has no battery-backed clock: on about a third of units the date is
+    # 1970 plus uptime. The MAC picks the mode, so a unit keeps it across restarts.
+    PCO_1970 = int(MAC_ADDRESS[-2:], 16) % 100 < 36
+    PCO_SKEW = random.randint(35, 120) * 86400 - time.time() if PCO_1970 else 0
+    # Real stubs link to "/http/index.html" (364 bytes) or "./http/index.html" (367).
+    PCO_TARGET = ("./" if int(MAC_ADDRESS[-5:-3], 16) % 2 else "/") + "http/index.html"
+    # When the stub file was written: hours to weeks before now on the card's clock.
+    PCO_STUB_MTIME = time.time() + PCO_SKEW - random.randint(3 * 3600, 25 * 86400 if PCO_1970 else 90 * 86400)
+
+
+def pco_now():
+    return time.time() + PCO_SKEW
+
+
+def pco_stub():
+    t = PCO_TARGET
+    return ('<html>\n  <head>\n    <title>Carel pCOWeb Home Page</title>\n'
+            f'    <meta http-equiv="refresh" content="0;url={t}">\n  </head>\n  <body>\n'
+            '\t<H1>Carel pCOWeb Home Page</h1>\n\t<br><br><br>\n'
+            f'\t<h2>This page will be redirected <a href "{t}">here...</a></h2>\n  </body>\n'
+            f'  <script language="JavaScript">\n    location="{t}";\n  </script>\n</html>\n\n').encode()
+
+
+def thttpd_page(code, title, text):
+    return (f"<HTML>\n<HEAD><TITLE>{code} {title}</TITLE></HEAD>\n"
+            '<BODY BGCOLOR="#cc9999" TEXT="#000000" LINK="#2020ff" VLINK="#4040cc">\n'
+            f"<H2>{code} {title}</H2>\n{text}\n<HR>\n"
+            f'<ADDRESS><A HREF="http://www.acme.com/software/thttpd/">{P["server"]}</A></ADDRESS>\n'
+            "</BODY>\n</HTML>\n").encode()
+
+
+def pco_default_page():
+    html = "\r\n".join([
+        '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">',
+        "<html>",
+        '<!--tagparser="/pcotagfilt"-->',
+        "<head>",
+        '<meta http-equiv="content-type" content="text/html; charset=ISO-8859-15">',
+        "<title>pCOWeb Default Page</title>",
+        '<style type="text/css">',
+        "body {font-family: Verdana, Arial, sans-serif; font-size: 12px; color: #999999; margin: 0}",
+        "a.list {color: #666666; text-decoration: none}",
+        "a:hover {color: #e93301}",
+        "</style>",
+        '<script type="text/javascript">',
+        "function factoryp() {",
+        '  var factory="User";',
+        '  if (factory == "Factory") { alert("Factory passwords are still set"); }',
+        "}",
+        "</script>",
+        "</head>",
+        "<body>",
+        '<table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#e93301">',
+        '<tr><td><img src="index_img/pw_logo.jpg" border="0"></td>',
+        '<td width="1"><img src="index_img/pw_square.gif" width="1" height="1"></td>',
+        '<td align="right"><a href="http://www.carel.com"><img src="index_img/pw_logo_carel.gif" border="0"></a></td></tr>',
+        '<tr><td colspan="3" height="4" background="index_img/pw_shadow.jpg"></td></tr>',
+        "</table>",
+        "<p>This is the default index.html provided by CAREL INDUSTRIES S.p.A.</p>",
+        "<p>This file may be replaced at any time via FTP, on directory /usr/local/root/http.</p>",
+        "<p>The FTP user is httpadmin. The user of the configuration pages is admin.</p>",
+        "<p><b>Administrator utilities</b></p>",
+        '<ul><li><a class="list" href="../config/adminpage.html">Go to Administrator Area</a></li></ul>',
+        "<p><b>Information</b></p>",
+        f"Main IP Address: {PCO_IP}<br>",
+        f"Mac Address: {MAC_ADDRESS}<br>",
+        f"Firmware Release: {P['firmware'].replace(' - ', chr(10) + ' - ')}<br>",
+        "</body>",
+        "</html>",
+        "",
+    ]).encode("latin-1")
+    return html + b" " * (PCO_PAGE_SIZE - len(html))
+
+
+# The admin area: a tab row over system menus, as in the card's own configuration pages.
+# Tab names, page titles and menu texts come from the firmware; the markup is our own.
+PCO_TABS = [("General", "adminpage.html"), ("Network", "pw_network.html"), ("pCO Com", "pw_pcocom.html"),
+            ("ModbusTCP", "pw_modbustcp.html"), ("SNMP", "pw_snmp.html"), ("BACnet", "pw_bacnet.html"),
+            ("Plugins", "scanplugins.cgi"), ("Users", "pw_users.html"), ("Firmware", "pw_firmware.html")]
+PCO_CONFIG_PAGES = {"adminpage.html": "pCOWeb Configuration", "pw_network.html": "Network Configuration",
+                    "pw_pcocom.html": "pCO Communication Configuration", "pw_modbustcp.html": "Modbus TCP Configuration",
+                    "pw_snmp.html": "SNMP Configuration", "pw_bacnet.html": "BACnet Configuration",
+                    "scanplugins.cgi": "Plugin Configuration", "pw_users.html": "Change User Passwords",
+                    "pw_firmware.html": "Firmware Upgrade", "pw_inet_ports.html": "Configure Internet services"}
+PCO_MENUS = [("System Information", [("View used/free disk space", "result.html"),
+                                     ("View factory bootswitch parameters", "result.html"),
+                                     ("View network configuration", "pw_view_network.cgi")]),
+             ("System Utilities", [("Fix permissions of HTML pages and CGI scripts", "adjustattrib.cgi"),
+                                   ("Stop services and free memory", "stopservices.cgi"),
+                                   ("Delete user files and settings", "clearflashdisk.cgi")]),
+             ("Internet services", [("Configure Internet services", "pw_inet_ports.html")])]
+
+
+def pco_config_page(name):
+    tabs = "".join(f'<td>{label}</td>' if page == name else f'<td><a href="{page}">{label}</a></td>'
+                   for label, page in PCO_TABS)
+    title = PCO_CONFIG_PAGES[name]
+    body = f"<h3>{title}</h3>\r\n"
+    if name == "adminpage.html":
+        body = "".join(f'<h4>{menu}</h4>\r\n<ul>' + "".join(f'<li><a href="{url}">{text}</a></li>' for text, url in items)
+                       + "</ul>\r\n" for menu, items in PCO_MENUS)
+    elif name == "pw_network.html":
+        body += f"<p>IP address {PCO_IP}<br>MAC address {MAC_ADDRESS}</p>\r\n"
+    return (f'<html>\r\n<head>\r\n  <title>{title}</title>\r\n</head>\r\n<body>\r\n'
+            f'<table cellspacing="0" cellpadding="4" border="1"><tr>{tabs}</tr></table>\r\n{body}'
+            '</body>\r\n</html>\r\n').encode("latin-1")
+
+
+
 # --- HTTP ---------------------------------------------------------------------
 
 class DecoyHTTP(BaseHTTPRequestHandler):
@@ -604,12 +741,74 @@ class DecoyHTTP(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
+    def pco_send(self, status, title, body, ctype="text/html", realm="", sized=False, mtime=0):
+        """A thttpd 2.20c reply: its header names and order, closed after the body."""
+        now = formatdate(pco_now(), usegmt=True)
+        head = [f"{self.request_version} {status} {title}", f"Server: {P['server']}", f"Content-type: {ctype}",
+                f"Date: {now}", f"Last-modified: {formatdate(mtime, usegmt=True) if mtime else now}",
+                "Accept-Ranges: bytes", "Connection: close"]
+        if realm:
+            head.append(f'WWW-Authenticate: Basic realm="{realm}"')
+        if sized:
+            head.append(f"Content-length: {len(body)}")
+        self.close_connection = True
+        self.wfile.write(("\r\n".join(head) + "\r\n\r\n").encode() + (b"" if self.command == "HEAD" else body))
+
+    def pco_error(self, status, title, text):
+        self.pco_send(status, title, thttpd_page(status, title, text))
+
+    def pco_login(self, realm, count):
+        """Check the Basic credentials; log the try unless it is just a picture loading."""
+        user = password = None
+        scheme, _, token = self.headers.get("Authorization", "").partition(" ")
+        if scheme.lower() == "basic":
+            user, _, password = base64.b64decode(token.strip() + "=" * (-len(token.strip()) % 4)).decode("latin-1").partition(":")
+        if user is None:
+            return False
+        granted = (user, password) in PCO_LOGINS
+        if count:
+            log(self.proto, self.client_address, "login_attempt", username=user, password=password,
+                granted=granted, realm=realm)
+        return granted
+
+    def pcoweb(self, path):
+        if self.command not in ("GET", "HEAD"):
+            return self.pco_error(501, "Not Implemented",
+                                  f"The requested method '{escape(self.command[:80], quote=False)}' is not implemented by this server.")
+        if path == "/":
+            return self.pco_send(200, "OK", pco_stub(), "text/html; charset=iso-8859-1", sized=True, mtime=PCO_STUB_MTIME)
+        image = path[len("/http/index_img/"):] if path.startswith("/http/index_img/") else ""
+        if path == "/http/index.html" or image in PCO_IMAGES:
+            realm, page = "flash/http", None if image else pco_default_page
+        elif path.startswith("/config/") and path[len("/config/"):] in PCO_CONFIG_PAGES:
+            realm, page = "config", lambda: pco_config_page(path[len("/config/"):])
+        else:
+            return self.pco_error(404, "Not Found", f"The requested URL '{escape(path[:80], quote=False)}' was not found on this server.")
+        try:
+            granted = self.pco_login(realm, count=not image)
+        except ValueError:  # undecodable credentials: same answer as a wrong password
+            granted = False
+        if not granted:
+            return self.pco_send(401, "Unauthorized", thttpd_page(
+                401, "Unauthorized", f"Authorization required for the URL '{escape(path[:80], quote=False)}'."), realm=realm)
+        if image:
+            return self.pco_send(200, "OK", PCO_PIXEL, PCO_IMAGES[image], sized=True, mtime=PCO_STUB_MTIME)
+        # Pages pass through the card's tag filter, which sends its own short header block.
+        self.close_connection = True
+        self.wfile.write(b"HTTP/1.0 200 OK\r\nContent-type: text/html\r\nCache-Control: no-cache\r\nExpires: -1\r\n\r\n"
+                         + (b"" if self.command == "HEAD" else page()))
+
     def send_error(self, code, message=None, explain=None):
         # Malformed request lines and the like; never show Python's stock error page.
         log(self.proto, self.client_address, "bad_request", code=code,
             raw=self.raw_requestline.decode("latin-1") if hasattr(self, "raw_requestline") else "")
         self.close_connection = True
         self.request_version = "HTTP/1.1"  # always send a status line and headers
+        if PERSONA == "pcoweb":  # thttpd answers 501 for odd methods and 400 for everything else we get here
+            if code == 501:
+                return self.pco_error(501, "Not Implemented", "The requested method is not implemented by this server.")
+            return self.pco_error(400, "Bad Request",
+                                  "Your request has bad syntax or is inherently impossible to satisfy.")
         self.reply(code, P["not_found"] if code == 404 else
                    f"<html><head><title>{code}</title></head><body><h1>{code}</h1></body></html>")
 
@@ -630,6 +829,8 @@ class DecoyHTTP(BaseHTTPRequestHandler):
             authorization=self.headers.get("Authorization", ""),
             body=body, exploit=exploit)
 
+        if PERSONA == "pcoweb":
+            return self.pcoweb(path)
         if PERSONA == "danfoss":
             if path in ("/html/xml.cgi", "/xml.cgi"):
                 if self.command == "POST":

@@ -12,6 +12,7 @@ It is one Python file with no dependencies outside the standard library.
 |---|---|---|
 | `danfoss` | Danfoss AK-SM 800A system manager | StoreView login, a fake store dashboard, the XML API at `/html/xml.cgi` and `/xml.cgi`, HTTP and HTTPS |
 | `dixell` | Copeland/Dixell XWEB EVO supervisor | Login page and the XWEB 500 CGI paths targeted by public exploits |
+| `pcoweb` | Carel pCOWeb card (HTTP only so far) | Redirect stub, Basic-auth pages behind the documented factory logins, an admin area with the card's configuration tabs |
 
 ### Looking like a real unit
 
@@ -27,7 +28,9 @@ Real units of both vendors serve their own favicon, and scanners match devices b
 
 The same goes for the Danfoss start page. Real units serve a short Angular loader page from the firmware, and thousands share its exact hash. Point `INDEX_FILE` at that `index.html` (from the public firmware package) and the decoy serves it byte for byte, with its original date in `Last-Modified` and `ETag`. The loader's `main.*.js` then shows the decoy's own login page, laid out like the firmware's remote login. If the firmware's `assets/images/Danfoss-logo.png` sits beside that `index.html`, the page uses it.
 
-Both personas can also run an optional **Modbus TCP** service with fake case temperatures, setpoints and a defrost register. Real AK-SM 800A units only use Modbus to talk to their own case controllers, so Modbus is off by default. Turn it on to catch generic industrial scanners.
+The pCOWeb persona (first-generation firmware) copies the header names and order of `thttpd 2.20c`, the 364 or 367 byte redirect page at `/`, the 401 on `/http/index.html` with realm `flash/http`, and the card's habit of showing a 1970 date on units without a clock. The factory logins `admin` / `fadmin` and `httpadmin` / `fhttpadmin` work. The admin area follows the card's configuration pages: the same tab row (General, Network, pCO Com, ModbusTCP, SNMP, BACnet, Plugins, Users, Firmware), page titles, menu texts and file names, taken from the public A1.5.4 firmware package. The markup is our own, since the real pages are Carel's. The admin realm `config` and the thttpd error texts are still guesses. It does not speak telnet, FTP, SNMP or BACnet yet.
+
+The Danfoss and Dixell personas can also run an optional **Modbus TCP** service with fake case temperatures, setpoints and a defrost register. Real AK-SM 800A units only use Modbus to talk to their own case controllers, so Modbus is off by default. Turn it on to catch generic industrial scanners.
 
 ### Exploits it recognises
 
@@ -101,7 +104,8 @@ On the host, only expose the ports the persona would really have, and block outb
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PERSONA` | `danfoss` | `danfoss` or `dixell` |
+| `PERSONA` | `danfoss` | `danfoss`, `dixell` or `pcoweb` |
+| `PCOWEB_IP` | `192.168.1.100` | LAN address shown on the pCOWeb home page |
 | `HTTP_PORT` | `8080` | HTTP listener |
 | `HTTPS_PORT` | `0` (off) | HTTPS listener, needs `CERT_FILE` and `KEY_FILE` |
 | `MODBUS_PORT` | `0` (off) | Modbus TCP listener |
