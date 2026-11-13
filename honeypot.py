@@ -18,6 +18,7 @@ Every event is one JSON line on stdout and appended to LOG_PATH.
 """
 
 import base64
+import hashlib
 import json
 import os
 import random
@@ -1536,27 +1537,8 @@ def snmp_value(arcs, tag, value):
     return ber(tag, ber_oid((1, 3, 6, 1, 4, 1, 8072, 3, 2, 10)) if tag == 0x06 else value)
 
 
-def snmp_answer(data, src):
-    """The reply to one datagram, or None. Always logs what was asked."""
-    try:
-        _, msg, _ = ber_read(data, 0)
-        _, ver, i = ber_read(msg, 0)
-        _, community, i = ber_read(msg, i)
-        pdu_tag, pdu, _ = ber_read(msg, i)
-        _, reqid, i = ber_read(pdu, 0)
-        _, _, i = ber_read(pdu, i)
-        _, _, i = ber_read(pdu, i)
-        _, binds, _ = ber_read(pdu, i)
-        oids, j = [], 0
-        while j < len(binds) and len(oids) < 4:
-            _, vb, j = ber_read(binds, j)
-            _, o, _ = ber_read(vb, 0)
-            oids.append(ber_oid_text(o))
-    except (ValueError, IndexError):
-        log("snmp", src, "malformed", raw_hex=data[:64].hex())
-        return None
-    community = community.decode("latin-1")
-    version = int.from_bytes(ver, "big")
+def snmp_gate(src, wants_answer):
+    """(answer, log) for one datagram under the per-source, total and log limits."""
     now = time.time()
     if len(_snmp_seen) >= 4096:  # full: forget sources that went quiet, never the ones already counted
         for ip in [ip for ip, (a, l) in _snmp_seen.items() if not [t for t in a + l if now - t < 60]]:
@@ -1566,16 +1548,91 @@ def snmp_answer(data, src):
     seen[:] = [t for t in seen if now - t < 60]
     logged[:] = [t for t in logged if now - t < 60]
     _snmp_all[:] = [t for t in _snmp_all if now - t < 60]
-    answer = (known and community in SNMP_COMMUNITIES and version in (0, 1) and pdu_tag in (0xA0, 0xA1)
-              and len(data) <= 484 and len(seen) < SNMP_RATE and len(_snmp_all) < SNMP_RATE_ALL)
-    if answer or len(logged) < SNMP_LOG_RATE:  # a flood of junk must not push real evidence out of the log
+    answer = wants_answer and known and len(seen) < SNMP_RATE and len(_snmp_all) < SNMP_RATE_ALL
+    log_it = answer or len(logged) < SNMP_LOG_RATE  # a flood of junk must not push real evidence out of the log
+    if log_it:
         logged.append(now)
+    if answer:
+        seen.append(now)
+        _snmp_all.append(now)
+    return answer, log_it
+
+
+# SNMPv3 engine discovery: scanners send an empty engine ID and real cards answer with theirs
+# (enterprise 2021, as the saved banners show). Nothing else of v3 is spoken.
+_digest = hashlib.sha256(MAC_ADDRESS.encode()).digest()
+SNMP_ENGINE_ID = bytes([0x80, 0x00, 0x07, 0xE5, 0x80]) + _digest[:5] + bytes(3)
+SNMP_BOOTS = 13 + int.from_bytes(_digest[5:7], "big") % 20000
+_snmp_unknown_engines = random.randint(1, 50)
+
+
+def int_bytes(n):
+    return n.to_bytes((n.bit_length() + 8) // 8, "big")
+
+
+def snmp_v3_report(msg_id, user, req_id, discovery=True):
+    """A report PDU: unknown engine ID for a discovery, unknown user name for the follow-up."""
+    global _snmp_unknown_engines
+    _snmp_unknown_engines += 1
+    up = int(pco_now() if PCO_1970 else time.time() - _snmp_boot)
+    usm = ber(0x30, ber(4, SNMP_ENGINE_ID) + ber(2, int_bytes(SNMP_BOOTS)) + ber(2, int_bytes(up))
+              + ber(4, user) + ber(4, b"") + ber(4, b""))
+    glob = ber(0x30, ber(2, msg_id) + ber(2, b"\x00\xff\xe3") + ber(4, b"\x00") + ber(2, b"\x03"))
+    bind = ber(0x30, ber(6, ber_oid((1, 3, 6, 1, 6, 3, 15, 1, 1, 4 if discovery else 3, 0))) + ber(0x41, int_bytes(_snmp_unknown_engines)))
+    pdu = ber(0xA8, ber(2, req_id) + ber(2, b"\x00") + ber(2, b"\x00") + ber(0x30, bind))
+    return ber(0x30, ber(2, b"\x03") + glob + ber(4, usm) + ber(0x30, ber(4, SNMP_ENGINE_ID) + ber(4, b"") + pdu))
+
+
+def snmp_answer(data, src):
+    """The reply to one datagram, or None. Logs what was asked, within the log limit."""
+    try:
+        _, msg, _ = ber_read(data, 0)
+        _, ver, i = ber_read(msg, 0)
+        version = int.from_bytes(ver, "big")
+        if version == 3:
+            _, glob, i = ber_read(msg, i)
+            _, sec, i = ber_read(msg, i)
+            _, scoped, _ = ber_read(msg, i)
+            _, msg_id, _ = ber_read(glob, 0)
+            _, usm, _ = ber_read(sec, 0)
+            _, engine, k = ber_read(usm, 0)
+            _, _, k = ber_read(usm, k)
+            _, _, k = ber_read(usm, k)
+            _, user, _ = ber_read(usm, k)
+            _, _, k = ber_read(scoped, 0)
+            _, _, k = ber_read(scoped, k)
+            _, pdu3, _ = ber_read(scoped, k)
+            _, req_id, _ = ber_read(pdu3, 0)
+        else:
+            _, community, i = ber_read(msg, i)
+            pdu_tag, pdu, _ = ber_read(msg, i)
+            _, reqid, i = ber_read(pdu, 0)
+            _, _, i = ber_read(pdu, i)
+            _, _, i = ber_read(pdu, i)
+            _, binds, _ = ber_read(pdu, i)
+            oids, j = [], 0
+            while j < len(binds) and len(oids) < 4:
+                _, vb, j = ber_read(binds, j)
+                _, o, _ = ber_read(vb, 0)
+                oids.append(ber_oid_text(o))
+    except (ValueError, IndexError):
+        if snmp_gate(src, False)[1]:
+            log("snmp", src, "malformed", raw_hex=data[:64].hex())
+        return None
+    if version == 3:
+        answer, log_it = snmp_gate(src, engine in (b"", SNMP_ENGINE_ID) and len(data) <= 484)
+        if log_it:
+            log("snmp", src, "request", version=3, community="", pdu="v3", oids=[],
+                user=user.decode("latin-1")[:32], engine_id=engine.hex()[:40], answered=answer)
+        return snmp_v3_report(msg_id, user, req_id, engine == b"") if answer else None
+    community = community.decode("latin-1")
+    answer, log_it = snmp_gate(src, community in SNMP_COMMUNITIES and version in (0, 1) and pdu_tag in (0xA0, 0xA1)
+                               and len(data) <= 484)
+    if log_it:
         log("snmp", src, "request", version=version + 1 if version else 1, community=community, pdu=hex(pdu_tag),
             oids=[".".join(map(str, o)) for o in oids], answered=answer)
     if not answer:
         return None
-    seen.append(now)
-    _snmp_all.append(now)
     binds_out, status, index = b"", 0, 0
     for n, o in enumerate(oids, 1):
         if pdu_tag == 0xA1:

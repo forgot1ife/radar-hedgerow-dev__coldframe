@@ -498,6 +498,19 @@ def test_pcoweb_ftp_telnet(workdir):
                 except socket.timeout:
                     return None
 
+        # SNMPv3 engine discovery (what scanners send first): answered with the card's engine ID.
+        usm = ber(0x30, ber(4, b"") + ber(2, b"\x00") + ber(2, b"\x00") + ber(4, b"") + ber(4, b"") + ber(4, b""))
+        scoped = ber(0x30, ber(4, b"") + ber(4, b"") + ber(0xA0, ber(2, b"\x36\xc4") + ber(2, b"\x00") + ber(2, b"\x00") + ber(0x30, b"")))
+        glob = ber(0x30, ber(2, b"\x4a\x69") + ber(2, b"\x00\xff\xe3") + ber(4, b"\x04") + ber(2, b"\x03"))
+        report = ask(ber(0x30, ber(2, b"\x03") + glob + ber(4, usm) + scoped))
+        assert report and report[0] == 0x30 and b"\xa8" in report and b"\x4a\x69" in report
+        at = report.index(b"\x80\x00\x07\xe5\x80")  # net-snmp style engine ID: enterprise 2021, 13 bytes
+        assert report[at - 2] == 4 and report[at - 1] == 13 and report[at + 10:at + 13] == b"\x00\x00\x00"
+        assert b"\x2b\x06\x01\x06\x03\x0f\x01\x01\x04\x00\x41" in report  # usmStatsUnknownEngineIDs.0, a counter
+        # The follow-up with that engine ID and an unknown user gets usmStatsUnknownUserNames.0.
+        usm2 = ber(0x30, ber(4, report[at:at + 13]) + ber(2, b"\x00") + ber(2, b"\x00") + ber(4, b"probe") + ber(4, b"") + ber(4, b""))
+        report2 = ask(ber(0x30, ber(2, b"\x03") + glob + ber(4, usm2) + scoped))
+        assert report2 and b"\x2b\x06\x01\x06\x03\x0f\x01\x01\x03\x00\x41" in report2 and b"probe" in report2
         reply = ask(snmp("public", 0xA0, "1.3.6.1.2.1.1.1.0"))
         assert reply and reply[0] == 0x30 and b"pCO Gateway" in reply and b"\xa2" in reply
         assert b"Italy" in ask(snmp("public", 0xA1, "1.3.6.1.2.1.1.5.0"))  # GETNEXT: name -> location
@@ -513,7 +526,8 @@ def test_pcoweb_ftp_telnet(workdir):
         assert ask(b"\x30\x03garbage") is None
         log = events(log_path)
         snmp_events = [e for e in log if e["proto"] == "snmp"]
-        assert [(e["community"], e["answered"]) for e in snmp_events if e["event"] == "request"][:4] == [
+        assert any(e["event"] == "request" and e["version"] == 3 and e["answered"] for e in snmp_events), snmp_events
+        assert [(e["community"], e["answered"]) for e in snmp_events if e["event"] == "request" and e["version"] != 3][:4] == [
             ("public", True), ("public", True), ("public", True), ("wrong-community", False)], snmp_events
         assert any(e["proto"] == "modbus" and e["event"] == "write" and e["start"] == 10 for e in log)
         logins = [(e["proto"], e["username"], e["password"], e["granted"]) for e in log if e["event"] == "login_attempt" and e["proto"] != "http"]
