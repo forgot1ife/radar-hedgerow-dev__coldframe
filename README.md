@@ -105,6 +105,7 @@ On the host, only expose the ports the persona would really have, and block outb
 | Variable | Default | Meaning |
 |---|---|---|
 | `PERSONA` | `danfoss` | `danfoss`, `dixell` or `pcoweb` |
+| `PCOWEB_CLOCK` | random | `1970` or `ntp`: whether the pCOWeb clock shows a 1970 date, as about a third of real cards do. Unset, it is chosen at random at start |
 | `PCOWEB_IP` | `192.168.1.100` | LAN address shown on the pCOWeb home page |
 | `HTTP_PORT` | `8080` | HTTP listener |
 | `HTTPS_PORT` | `0` (off) | HTTPS listener, needs `CERT_FILE` and `KEY_FILE` |

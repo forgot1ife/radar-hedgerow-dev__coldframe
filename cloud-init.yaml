@@ -27,14 +27,17 @@ runcmd:
       # Real units each have their own store name and MAC, so give this one its own.
       STORE_NAME="Fresh Market $(shuf -i 1000-9999 -n1)"
       case "$PERSONA" in
-        danfoss) oui=00:0a:5c; ports="-p 80:8080 -p 443:8443"; https=8443 ;;
+        danfoss) oui=00:07:68; ports="-p 80:8080 -p 443:8443"; https=8443 ;;
         pcoweb) oui=00:0a:5c; ports="-p 80:8080"; https=0 ;;
         *) oui=00:1a:22; ports="-p 80:8080"; https=0 ;;
       esac
       MAC_ADDRESS=$(printf "$oui:%02x:%02x:%02x" $(shuf -i 0-255 -n3))
+      # About a third of real pCOWeb cards show a 1970 date; pick this server's mode once.
+      CLOCK=ntp
+      [ "$(shuf -i 0-99 -n1)" -lt 36 ] && CLOCK=1970
       podman run -d --name coldframe --restart=always \
         --read-only --cap-drop=ALL --security-opt no-new-privileges --userns=auto \
         --memory 128m --pids-limit 512 --log-opt max-size=10m \
         $ports -v coldframe-logs:/logs:U -e PERSONA="$PERSONA" -e HTTPS_PORT=$https \
-        -e STORE_NAME="$STORE_NAME" -e MAC_ADDRESS="$MAC_ADDRESS" coldframe
+        -e STORE_NAME="$STORE_NAME" -e MAC_ADDRESS="$MAC_ADDRESS" -e PCOWEB_CLOCK="$CLOCK" coldframe
   - systemctl enable --now podman-restart.service

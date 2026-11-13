@@ -242,11 +242,11 @@ def test_danfoss_index_file(workdir):
 
 def test_unit_strings(workdir):
     # Store name and MAC address are per-unit strings, so each deployment sets its own.
-    proc, _ = start("danfoss", workdir, STORE_NAME="Konijn & Zonen 7731", MAC_ADDRESS="00:0a:5c:11:22:33")
+    proc, _ = start("danfoss", workdir, STORE_NAME="Konijn & Zonen 7731", MAC_ADDRESS="00:07:68:11:22:33")
     try:
         units = http("/xml.cgi", b'<cmd action="read_units" user="admin" pass="admin"/>')[2]
         assert "<store_name>Konijn &amp; Zonen 7731</store_name>" in units
-        assert "<macaddr>00:0a:5c:11:22:33</macaddr>" in units and "3e:91:4d" not in units
+        assert "<macaddr>00:07:68:11:22:33</macaddr>" in units and "3e:91:4d" not in units
     finally:
         proc.terminate()
         proc.wait(timeout=5)
@@ -280,8 +280,8 @@ def basic(user, password):
 
 
 def test_pcoweb(workdir):
-    # A real card's clock starts at 1970 (no RTC) on about a third of units; MAC ending 00 picks that.
-    proc, log_path = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:1f:ea:00")
+    # A real card's clock starts at 1970 (no RTC) on about a third of units; PCOWEB_CLOCK=1970 picks that.
+    proc, log_path = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:1f:ea:00", PCOWEB_CLOCK="1970")
     try:
         # GET / is a small redirect stub, not a 401; header names and order as on real cards.
         line, names, h, body = raw_http(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -350,8 +350,8 @@ def test_pcoweb(workdir):
     finally:
         proc.terminate()
         proc.wait(timeout=5)
-    # MAC ending 0xff picks a card whose clock was set by NTP, so dates are current.
-    proc, _ = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:aa:bb:ff")
+    # PCOWEB_CLOCK=ntp picks a card whose clock was set by NTP, so dates are current.
+    proc, _ = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:aa:bb:ff", PCOWEB_CLOCK="ntp")
     try:
         _, _, h, _ = raw_http(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
         assert int(h["date"].split()[3]) >= 2026 and int(h["last-modified"].split()[3]) >= 2025

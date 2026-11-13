@@ -336,7 +336,7 @@ WEAK_LOGINS = {("supervisor", "12345"), ("superviseur", "12345"), ("admin", "adm
 # deployment, or every copy of this decoy shows the same store name and MAC address.
 STORE_NAME = os.environ.get("STORE_NAME", "Fresh Market 0412")
 MAC_ADDRESS = os.environ.get("MAC_ADDRESS") or {
-    "danfoss": "00:0a:5c:3e:91:4d", "pcoweb": "00:0a:5c:12:b4:7e"}.get(PERSONA, "00:1a:22:6b:0e:41")
+    "danfoss": "00:07:68:3e:91:4d", "pcoweb": "00:0a:5c:12:b4:7e"}.get(PERSONA, "00:1a:22:6b:0e:41")
 SESSION_TTL = 3600
 _sessions = {}  # token -> expiry (monotonic)
 _sessions_lock = threading.Lock()
@@ -576,8 +576,9 @@ PCO_PAGE_SIZE = 3296  # the card's default page is 3294 to 3298 bytes, by IP and
 
 if PERSONA == "pcoweb":
     # A card has no battery-backed clock: on about a third of units the date is
-    # 1970 plus uptime. The MAC picks the mode, so a unit keeps it across restarts.
-    PCO_1970 = int(MAC_ADDRESS[-2:], 16) % 100 < 36
+    # 1970 plus uptime. PCOWEB_CLOCK pins the mode (cloud-init picks one per server);
+    # unset, it is chosen at random, so no rule in this file tells you which decoys do it.
+    PCO_1970 = {"1970": True, "ntp": False}.get(os.environ.get("PCOWEB_CLOCK", ""), random.random() < 0.36)
     PCO_SKEW = random.randint(35, 120) * 86400 - time.time() if PCO_1970 else 0
     # Real stubs link to "/http/index.html" (364 bytes) or "./http/index.html" (367).
     PCO_TARGET = ("./" if int(MAC_ADDRESS[-5:-3], 16) % 2 else "/") + "http/index.html"
