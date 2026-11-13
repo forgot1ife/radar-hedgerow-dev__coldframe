@@ -371,10 +371,15 @@ def has_session(token):
         return _sessions.get(token, 0) > time.monotonic()
 
 
+def xml_unescape(v):
+    # The login page escapes what is typed, so undo it: the log and the weak-login check need the typed text.
+    return v.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&apos;", "'").replace("&amp;", "&")
+
+
 def danfoss_xml(src, proto, body, headers):
     match = CMD_RE.search(body)
     pairs = ATTR_RE.findall(match.group(1))[:16] if match else []
-    attrs = {k[:32]: v[:256] for k, v in pairs}
+    attrs = {k[:32]: xml_unescape(v)[:256] for k, v in pairs}
     action = attrs.get("action", "")
     token = headers.get("AKSM-Auth", "")
     exploit = danfoss_exploit_tag(action, attrs)

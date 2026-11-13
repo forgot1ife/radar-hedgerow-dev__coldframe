@@ -124,10 +124,13 @@ def test_danfoss(workdir):
         http("/html/xml.cgi", b'<cmd action="load_cert" filename="`id`"/>')
         _, _, xml = http("/html/xml.cgi", b'<cmd action="x&quot;><evil/>"/>')
         assert "<evil/>" not in xml
+        # A browser escapes what is typed (a"b<c&d), so the log must hold the typed password.
+        http("/html/xml.cgi", b'<cmd action="getauth" user="u&amp;v" password="a&quot;b&lt;c&amp;d&gt;"/>')
 
         log = events(log_path)
         logins = [e for e in log if e["event"] == "login_attempt"]
         assert [(e["username"], e["granted"]) for e in logins[:2]] == [("nobody", False), ("Supervisor", True)]
+        assert any((e["username"], e["password"]) == ("u&v", 'a"b<c&d>') for e in logins), logins[-1]
         exploits = [e["exploit"] for e in log if e["event"] == "xml_cmd" and e["exploit"]]
         assert exploits == ["CVE-2025-41450 code-of-the-day bypass, correct code",
                             "CVE-2025-41450 code-of-the-day bypass",
