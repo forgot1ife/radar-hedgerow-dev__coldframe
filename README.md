@@ -62,7 +62,7 @@ python3 -I test_honeypot.py
 
 ### Quickest: paste into "User data"
 
-Create an Ubuntu 24.04 server (a $4 DigitalOcean droplet is plenty) and paste [cloud-init.yaml](cloud-init.yaml) into the **User data** box. Change `PERSONA=danfoss` to `dixell` if you want the XWEB persona. About two minutes after boot the decoy is listening on port 80 (and 443 for Danfoss), hardened as below.
+Create an Ubuntu 24.04 server (a $4 DigitalOcean droplet is plenty) and paste [cloud-init.yaml](cloud-init.yaml) into the **User data** box. Change `PERSONA=danfoss` to `dixell` for the XWEB persona or `pcoweb` for the Carel card. About two minutes after boot the decoy is listening on port 80 (and 443 for Danfoss), hardened as below.
 
 Then, in your provider's firewall, allow only the decoy's ports from anywhere and SSH from your own address. Read the log with:
 
@@ -155,6 +155,7 @@ python3 -I summary.py --hours 24 --ignore <your-own-ip> < events.jsonl
 - **Shallow interaction.** Logged-in attackers see a small dashboard and a handful of XML commands, not the full StoreView app.
 - **Public code can be fingerprinted.** Anyone can read this repository and spot its exact responses. Set `STORE_NAME` and `MAC_ADDRESS` differently on every deployment (the cloud-init file does this for you), since real units each have their own. The certificate names and the rest of the page are shared by real units of that model, so they stay the same; changing them would make the decoy easier to spot, not harder. Page layout beyond these strings is in the source.
 - **Unconfirmed details.** Static paths, the full web app and some XML response shapes of real units are not public. Where they were missing, coldframe uses plausible values.
+- **Vendor MAC prefixes are only partly verified.** The Danfoss persona uses a prefix the IEEE registry assigns to Danfoss A/S, and pCOWeb uses Carel's; we have not confirmed that real AK-SM units use that exact prefix. The Dixell persona still uses a placeholder prefix.
 - **Cloud IPs look suspicious.** Some scanners flag industrial devices on cloud hosting as likely honeypots.
 
 ## Sources
@@ -168,6 +169,9 @@ python3 -I summary.py --hours 24 --ignore <your-own-ip> < events.jsonl
 - Copeland XWEB EVO operation manual r5.4.1 (default login, lockout): https://webapps.copeland.com/Dixell/Content/Pages/Manuals/XWEBEVO/XWEBEVOV5.4.1OPERATION/XWEB-EVO-r5.4.1-OPR-EN.pdf
 - CISA ICSA-26-057-10 and Claroty Team82, XWEB Pro vulnerabilities: https://claroty.com/team82/research/chilling-discoveries-unpacking-vulnerabilities-in-copeland-xweb-pro-controllers
 - Ironhackers, CVE-2025-41450 code-of-the-day analysis: https://ironhackers.es/en/danfoss-ak-sm-800a-cve-2025-41450/
+- Carel pCOWeb firmware package A1.5.4 / B1.2.4 and the pCOWeb manual (routes, page titles, redirect page, factory logins), from Carel's public downloads
+- RedTeam Pentesting advisory RT-SA-2019-013, pCOWeb factory logins
+- IEEE OUI registry (vendor prefixes for the Danfoss and Carel MAC addresses)
 - Shodan records of exposed units (header set, title, certificate fields), November 2026
 
 ## Related work
