@@ -43,6 +43,7 @@ HTTPS_PORT = int(os.environ.get("HTTPS_PORT", "0"))      # 0 = off
 MODBUS_PORT = int(os.environ.get("MODBUS_PORT", "0"))    # 0 = off
 FTP_PORT = int(os.environ.get("FTP_PORT", "0"))          # 0 = off (pcoweb only)
 TELNET_PORT = int(os.environ.get("TELNET_PORT", "0"))    # 0 = off (pcoweb only)
+SNMP_PORT = int(os.environ.get("SNMP_PORT", "0"))        # 0 = off (pcoweb only), UDP
 CERT_FILE = os.environ.get("CERT_FILE", "cert.pem")
 KEY_FILE = os.environ.get("KEY_FILE", "key.pem")
 LOG_PATH = os.environ.get("LOG_PATH", "events.jsonl")
@@ -1039,6 +1040,13 @@ for case in range(8):
     REGISTERS[200 + case] = 0
 
 
+if PERSONA == "pcoweb":
+    # A pCO cold-room controller: holding register n is analog variable n, in tenths of a unit.
+    # 1 room, 2 coil, 3 suction, 4 discharge, 5-6 pressures (bar), 7 condensing, 8 superheat,
+    # 9 differential, 10 room setpoint (writable), 11 defrost end, 12 high alarm. The real map depends on the OEM program.
+    REGISTERS = dict(enumerate([-184, -241, -220, 715, 19, 146, 382, 74, 20, -180, 80, -100, 0], 1))
+
+
 CASE_NAMES = ["Frozen 1", "Frozen 2", "Ice cream", "Frozen 4", "Dairy", "Meat", "Deli", "Produce"]
 _defrost_since = {}  # case -> time defrost started
 DEFROST_SECONDS = 20 * 60
@@ -1177,8 +1185,7 @@ class DecoyModbus(socketserver.BaseRequestHandler):
 
 
 # --- Carel pCOWeb: FTP and telnet (first-generation firmware) -------------------
-# Banners follow what Shodan records for real cards. Every login fails for now:
-# we log what is tried, and there is no session behind it.
+# Banners follow what Shodan records for real cards.
 
 PCO_HOST = "pCOWeb" + MAC_ADDRESS.replace(":", "")[-6:].lower()
 PCO_FTP_HELP = (
@@ -1227,6 +1234,88 @@ def read_line(sock, limit=256, telnet_echo=None, hide=False):
             sock.sendall(b)
 
 
+# Factory logins from the card's manual. Behind them is a script that only matches text: no command is ever run.
+PCO_TELNET_LOGINS = {("root", "froot"), ("httpadmin", "fhttpadmin"), ("carel", "fcarel"), ("guest", "fguest"), ("nobody", "")}
+PCO_FTP_LOGINS = {("httpadmin", "fhttpadmin"), ("root", "froot")}
+PCO_DIRS = {  # a small, believable tree; the flash paths come from the firmware
+    "/": ["bin", "dev", "etc", "home", "lib", "proc", "sbin", "tmp", "usr", "var"],
+    "/usr": ["bin", "lib", "local", "sbin"], "/usr/local": ["bin", "etc", "root", "sbin"],
+    "/usr/local/root": ["config", "flash"], "/usr/local/root/flash": ["config", "http"],
+    "/usr/local/root/flash/http": ["admin", "index.html", "index_img"], "/etc": ["inetd.conf", "passwd", "issue"],
+    "/tmp": [], "/var": ["log", "run"], "/bin": ["ls", "cat", "sh", "busybox"], "/home": [],
+}
+PCO_PASSWD = ("root:x:0:0:root:/:/bin/sh\r\nhttpadmin:x:500:500:httpadmin:/usr/local/root/flash/http:/bin/sh\r\n"
+              "carel:x:501:501:carel:/:/bin/sh\r\nguest:x:502:502:guest:/:/bin/sh\r\nnobody:x:99:99:nobody:/:/bin/sh\r\n")
+PCO_PS = ("  PID TTY      Uid        Size State Command\r\n    1 ?        root        412 S     init\r\n"
+          "   24 ?        root        608 S     syslogd\r\n   31 ?        root        720 S     inetd\r\n"
+          "   37 ?        root        844 S     snmpd\r\n   44 ?        root        904 S     watchdogd\r\n"
+          "   52 ?        root       1360 S     thttpd -c /config/*.cgi -d /var/run/\r\n")
+
+
+def pco_dir(cwd, arg):
+    """Resolve a path against cwd; None when it is not in our tree."""
+    parts = []
+    for p in (arg if arg.startswith("/") else cwd + "/" + arg).split("/"):
+        if p == "..":
+            parts = parts[:-1]
+        elif p and p != ".":
+            parts.append(p)
+    path = "/" + "/".join(parts)
+    return path if path in PCO_DIRS else None
+
+
+def pco_shell(sock, src, user):
+    """A fake root prompt. Everything typed is logged; nothing is executed."""
+    cwd = "/"
+    uid = {"root": "0(root) gid=0(root)", "httpadmin": "500(httpadmin) gid=500(httpadmin)", "carel": "501(carel) gid=501(carel)",
+           "guest": "502(guest) gid=502(guest)", "nobody": "99(nobody) gid=99(nobody)"}[user]
+    for _ in range(100):
+        clock = time.strftime("%H:%M:%S", time.gmtime(pco_now()))
+        sock.sendall(f"\r\n[{user}@{PCO_HOST} {clock} {cwd}]$ ".encode())
+        line = read_line(sock, 256, telnet_echo=True)
+        if line is None:
+            return
+        log("telnet", src, "command", cmd=line)
+        words = line.split()
+        cmd, args = (words[0], words[1:]) if words else ("", [])
+        out = ""
+        if cmd in ("exit", "logout", "quit"):
+            return
+        elif cmd == "pwd":
+            out = cwd
+        elif cmd == "cd":
+            target = pco_dir(cwd, args[0]) if args else "/"
+            if target is None:
+                out = f"sh: cd: {args[0][:60]}: No such file or directory"
+            else:
+                cwd = target
+        elif cmd == "ls":
+            target = pco_dir(cwd, args[-1]) if args and not args[-1].startswith("-") else cwd
+            out = "  ".join(PCO_DIRS[target]) if target else f"ls: {args[-1][:60]}: No such file or directory"
+        elif cmd in ("id", "whoami"):
+            out = f"uid={uid}" if cmd == "id" else user
+        elif cmd == "uname":
+            out = {"-r": "2.4.21-rmk1", "-m": "armv4l", "-a": f"Linux {PCO_HOST} 2.4.21-rmk1 #1 armv4l unknown"}.get(args[0] if args else "", "Linux")
+        elif cmd == "ps":
+            out = PCO_PS.rstrip()
+        elif cmd == "ifconfig":
+            out = pco_view_network().rstrip()
+        elif cmd == "cat" and args == ["/etc/passwd"]:
+            out = PCO_PASSWD.rstrip()
+        elif cmd == "cat" and args == ["/etc/issue"]:
+            out = f"Linux on Cirrus Logic EP7311 by DVE - Varese, Italy"
+        elif cmd == "cat" and args:
+            out = f"cat: {args[0][:60]}: No such file or directory"
+        elif cmd == "echo":
+            out = " ".join(a for a in args if a not in ("-e", "-n"))[:200]
+        elif cmd.endswith("busybox") and args:
+            out = f"{args[0][:40]}: applet not found"
+        elif cmd:
+            out = f"sh: {cmd.split('/')[-1][:40]}: command not found"
+        if out:
+            sock.sendall(b"\r\n" + out.encode("latin-1", "replace").replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
+
+
 class DecoyFTP(socketserver.BaseRequestHandler):
     def handle(self):
         watch(self.request)
@@ -1235,8 +1324,8 @@ class DecoyFTP(socketserver.BaseRequestHandler):
             sock.settimeout(SOCKET_TIMEOUT)
             log("ftp", src, "connect")
             sock.sendall(f"220 {PCO_HOST} FTP server (GNU inetutils 1.3.2) ready.\r\n".encode())
-            user, fails = "", 0
-            for _ in range(50):
+            user, logged, cwd, fails = "", "", "/", 0
+            for _ in range(60):
                 line = read_line(sock)
                 if line is None:
                     return
@@ -1245,12 +1334,17 @@ class DecoyFTP(socketserver.BaseRequestHandler):
                 if cmd == "PASS":
                     if not user:
                         reply = "503 Login with USER first."
+                    elif logged:
+                        reply = "503 Already logged in."
                     else:
-                        log("ftp", src, "login_attempt", username=user, password=arg, granted=False)
+                        granted = (user, arg) in PCO_FTP_LOGINS
+                        log("ftp", src, "login_attempt", username=user, password=arg, granted=granted)
                         time.sleep(random.uniform(0.6, 1.4))
-                        fails += 1
-                        reply = "530 Login incorrect."
-                        user = ""
+                        if granted:
+                            logged, reply = user, f"230 User {user} logged in."
+                        else:
+                            fails += 1
+                            reply, user = "530 Login incorrect.", ""
                 else:
                     if cmd != "USER":
                         log("ftp", src, "command", cmd=cmd, arg=arg)
@@ -1265,10 +1359,26 @@ class DecoyFTP(socketserver.BaseRequestHandler):
                         reply = PCO_FTP_HELP.rstrip("\r\n")
                     elif cmd == "NOOP":
                         reply = "200 NOOP command successful."
-                    elif cmd in PCO_FTP_COMMANDS:
-                        reply = "530 Please login with USER and PASS."
-                    else:
+                    elif cmd not in PCO_FTP_COMMANDS:
                         reply = f"500 '{cmd}': command not understood."
+                    elif not logged:
+                        reply = "530 Please login with USER and PASS."
+                    elif cmd in ("PWD", "XPWD"):
+                        reply = f'257 "{cwd}" is current directory.'
+                    elif cmd in ("CWD", "XCWD", "CDUP", "XCUP"):
+                        target = pco_dir(cwd, arg if cmd in ("CWD", "XCWD") else "..")
+                        if target is None:
+                            reply = f"550 {arg[:60]}: No such file or directory."
+                        else:
+                            cwd, reply = target, "250 CWD command successful."
+                    elif cmd == "SYST":
+                        reply = "215 UNIX Type: L8"
+                    elif cmd == "TYPE":
+                        reply = f"200 Type set to {arg[:1].upper() or 'I'}."
+                    elif cmd in ("PASV", "PORT", "LIST", "NLST", "RETR", "STOR", "APPE", "STOU"):
+                        reply = "425 Can't build data connection: Connection refused."  # no data channel behind it
+                    else:
+                        reply = "550 Permission denied."
                 sock.sendall(reply.encode("latin-1", "replace") + b"\r\n")
                 if fails >= 5:  # a guess: how many tries before the card hangs up
                     sock.sendall(b"421 Service not available, remote server has closed connection\r\n")
@@ -1296,13 +1406,146 @@ class DecoyTelnet(socketserver.BaseRequestHandler):
                 password = read_line(sock, 64, telnet_echo=True, hide=True)
                 if password is None:
                     return
-                log("telnet", src, "login_attempt", username=user, password=password, granted=False)
+                granted = (user, password) in PCO_TELNET_LOGINS
+                log("telnet", src, "login_attempt", username=user, password=password, granted=granted)
                 time.sleep(random.uniform(0.6, 1.4))
+                if granted:
+                    return pco_shell(sock, src, user)
                 sock.sendall(f"\r\nLogin incorrect\r\n{PCO_HOST} login: ".encode())
         except (socket.timeout, ConnectionError, OSError):
             pass
         finally:
             unwatch(self.request)
+
+
+# --- Carel pCOWeb: SNMP v1/v2c (UDP) ---------------------------------------------
+# Values follow what Shodan records for real cards. Only reads of the system group are
+# answered, with replies about the size of the request, never to bulk requests and at
+# most SNMP_RATE answers a minute per source, so the decoy is no use as a reflector.
+
+SNMP_RATE = 30
+SNMP_COMMUNITIES = {"public", "carel"}
+_snmp_boot = time.time() - random.randint(3, 90) * 86400
+SNMP_MIB = [  # (oid, BER tag, value), in OID order
+    ((1, 3, 6, 1, 2, 1, 1, 1, 0), 0x04, b"pCO Gateway"),
+    ((1, 3, 6, 1, 2, 1, 1, 2, 0), 0x06, None),  # sysObjectID, filled in below
+    ((1, 3, 6, 1, 2, 1, 1, 3, 0), 0x43, None),  # sysUpTime, live
+    ((1, 3, 6, 1, 2, 1, 1, 4, 0), 0x04, b"<pcoweb@carel.com>"),
+    ((1, 3, 6, 1, 2, 1, 1, 5, 0), 0x04, b"pCOWeb"),
+    ((1, 3, 6, 1, 2, 1, 1, 6, 0), 0x04, b"Italy"),
+]
+_snmp_seen = {}  # source -> recent answer times
+
+
+def ber(tag, body):
+    n = len(body)
+    return bytes([tag]) + (bytes([n]) if n < 128 else bytes([0x81, n]) if n < 256 else bytes([0x82, n >> 8, n & 255])) + body
+
+
+def ber_read(data, i):
+    """(tag, body, next index) of the TLV at i; ValueError when it is cut off or odd."""
+    if i + 2 > len(data):
+        raise ValueError
+    tag, n, i = data[i], data[i + 1], i + 2
+    if n & 0x80:
+        k = n & 0x7F
+        if not 1 <= k <= 2 or i + k > len(data):
+            raise ValueError
+        n, i = int.from_bytes(data[i:i + k], "big"), i + k
+    if i + n > len(data):
+        raise ValueError
+    return tag, data[i:i + n], i + n
+
+
+def ber_oid(arcs):
+    out = bytes([40 * arcs[0] + arcs[1]])
+    for a in arcs[2:]:
+        chunk = [a & 0x7F]
+        while a >> 7:
+            a >>= 7
+            chunk.append(0x80 | (a & 0x7F))
+        out += bytes(reversed(chunk))
+    return out
+
+
+def ber_oid_text(body):
+    if not body:
+        raise ValueError
+    arcs, v = [body[0] // 40, body[0] % 40], 0
+    for b in body[1:]:
+        v = (v << 7) | (b & 0x7F)
+        if not b & 0x80:
+            arcs.append(v)
+            v = 0
+    return tuple(arcs)
+
+
+def snmp_value(arcs, tag, value):
+    if tag == 0x43:
+        return ber(0x43, int((time.time() - _snmp_boot) * 100 % 2 ** 32).to_bytes(4, "big").lstrip(b"\0") or b"\0")
+    return ber(tag, ber_oid((1, 3, 6, 1, 4, 1, 8072, 3, 2, 10)) if tag == 0x06 else value)
+
+
+def snmp_answer(data, src):
+    """The reply to one datagram, or None. Always logs what was asked."""
+    try:
+        _, msg, _ = ber_read(data, 0)
+        _, ver, i = ber_read(msg, 0)
+        _, community, i = ber_read(msg, i)
+        pdu_tag, pdu, _ = ber_read(msg, i)
+        _, reqid, i = ber_read(pdu, 0)
+        _, _, i = ber_read(pdu, i)
+        _, _, i = ber_read(pdu, i)
+        _, binds, _ = ber_read(pdu, i)
+        oids, j = [], 0
+        while j < len(binds) and len(oids) < 8:
+            _, vb, j = ber_read(binds, j)
+            _, o, _ = ber_read(vb, 0)
+            oids.append(ber_oid_text(o))
+    except (ValueError, IndexError):
+        log("snmp", src, "malformed", raw_hex=data[:64].hex())
+        return None
+    community = community.decode("latin-1")
+    version = int.from_bytes(ver, "big")
+    now = time.time()
+    seen = _snmp_seen.setdefault(src[0], [])
+    seen[:] = [t for t in seen if now - t < 60]
+    answer = (community in SNMP_COMMUNITIES and version in (0, 1) and pdu_tag in (0xA0, 0xA1, 0xA3)
+              and len(data) <= 484 and len(seen) < SNMP_RATE)
+    log("snmp", src, "request", version=version + 1 if version else 1, community=community, pdu=hex(pdu_tag),
+        oids=[".".join(map(str, o)) for o in oids], answered=answer)
+    if len(_snmp_seen) > 4096:
+        _snmp_seen.clear()
+    if not answer:
+        return None
+    seen.append(now)
+    binds_out, status, index = b"", 0, 0
+    for n, o in enumerate(oids, 1):
+        if pdu_tag == 0xA3:  # writes: the decoy changes nothing
+            status, index, entry = 4, n, None
+        elif pdu_tag == 0xA1:
+            entry = next((e for e in SNMP_MIB if e[0] > o), None)
+        else:
+            entry = next((e for e in SNMP_MIB if e[0] == o), None)
+        if entry is None:
+            marker = b"\x82\x00" if pdu_tag == 0xA1 and version else b"\x80\x00" if version else None
+            if marker is None and not status:
+                status, index = 2, n
+            binds_out += ber(0x30, ber(6, ber_oid(o)) + (marker or ber(5, b"")))
+        else:
+            binds_out += ber(0x30, ber(6, ber_oid(entry[0])) + snmp_value(*entry))
+    out_pdu = ber(0xA2, ber(2, reqid) + ber(2, bytes([status])) + ber(2, bytes([index])) + ber(0x30, binds_out))
+    return ber(0x30, ber(2, ver) + ber(4, community.encode("latin-1")) + out_pdu)
+
+
+def serve_snmp(port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", port))
+    while True:
+        data, src = sock.recvfrom(2048)
+        reply = snmp_answer(data, src)
+        if reply:
+            sock.sendto(reply, src)
 
 
 class ThreadingTCP(Guarded, socketserver.ThreadingTCPServer):
@@ -1323,9 +1566,11 @@ def main():
         servers.append(ThreadingTCP(("0.0.0.0", FTP_PORT), DecoyFTP))
     if PERSONA == "pcoweb" and TELNET_PORT:
         servers.append(ThreadingTCP(("0.0.0.0", TELNET_PORT), DecoyTelnet))
+    if PERSONA == "pcoweb" and SNMP_PORT:
+        threading.Thread(target=serve_snmp, args=(SNMP_PORT,), daemon=True).start()
     log("system", ("0.0.0.0", 0), "start",
         http_port=HTTP_PORT, https_port=HTTPS_PORT, modbus_port=MODBUS_PORT,
-        ftp_port=FTP_PORT, telnet_port=TELNET_PORT)
+        ftp_port=FTP_PORT, telnet_port=TELNET_PORT, snmp_port=SNMP_PORT)
     threading.Thread(target=reaper, daemon=True).start()
     for server in servers[1:]:
         threading.Thread(target=server.serve_forever, daemon=True).start()

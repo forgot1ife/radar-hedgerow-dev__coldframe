@@ -27,9 +27,10 @@ runcmd:
       # Real units each have their own store name and MAC, so give this one its own.
       STORE_NAME="Fresh Market $(shuf -i 1000-9999 -n1)"
       case "$PERSONA" in
-        danfoss) oui=00:07:68; ports="-p 80:8080 -p 443:8443"; https=8443 ;;
-        pcoweb) oui=00:0a:5c; ports="-p 80:8080 -p 21:2121 -p 23:2323"; https=0 ;;
-        *) oui=00:1a:22; ports="-p 80:8080"; https=0 ;;
+        danfoss) oui=00:07:68; ports="-p 80:8080 -p 443:8443"; https=8443; more="" ;;
+        pcoweb) oui=00:0a:5c; ports="-p 80:8080 -p 21:2121 -p 23:2323 -p 502:5020 -p 161:1610/udp"; https=0
+          more="-e FTP_PORT=2121 -e TELNET_PORT=2323 -e MODBUS_PORT=5020 -e SNMP_PORT=1610" ;;
+        *) oui=00:1a:22; ports="-p 80:8080"; https=0; more="" ;;
       esac
       MAC_ADDRESS=$(printf "$oui:%02x:%02x:%02x" $(shuf -i 0-255 -n3))
       # About a third of real pCOWeb cards show a 1970 date; pick this server's mode once.
@@ -39,5 +40,5 @@ runcmd:
         --read-only --cap-drop=ALL --security-opt no-new-privileges --userns=auto \
         --memory 128m --pids-limit 512 --log-opt max-size=10m \
         $ports -v coldframe-logs:/logs:U -e PERSONA="$PERSONA" -e HTTPS_PORT=$https \
-        -e STORE_NAME="$STORE_NAME" -e MAC_ADDRESS="$MAC_ADDRESS" -e PCOWEB_CLOCK="$CLOCK" -e FTP_PORT=2121 -e TELNET_PORT=2323 coldframe
+        -e STORE_NAME="$STORE_NAME" -e MAC_ADDRESS="$MAC_ADDRESS" -e PCOWEB_CLOCK="$CLOCK" $more coldframe
   - systemctl enable --now podman-restart.service
